@@ -38,21 +38,15 @@ static krb5_error_code
 validate(krb5_key key, const krb5_data *ivec, const krb5_crypto_iov *data,
          size_t num_data, krb5_boolean *empty)
 {
-    size_t i, input_length;
-
-    for (i = 0, input_length = 0; i < num_data; i++) {
-        const krb5_crypto_iov *iov = &data[i];
-
-        if (ENCRYPT_IOV(iov))
-            input_length += iov->data.length;
-    }
-
+    size_t input_length;
+    
     /* Is our key the correct length? */
     if (key->keyblock.length != DES_KEY_SIZE)
         return(KRB5_BAD_KEYSIZE);
 
     /* Is our input a multiple of the block size, and
        the IV the correct length? */
+    input_length = iov_total_length(data, num_data, FALSE);
     if ((input_length%DES_BLOCK_SIZE) != 0 
         || (ivec != NULL && ivec->length != DES_BLOCK_SIZE))
         return(KRB5_BAD_MSIZE);
@@ -80,11 +74,9 @@ k5_des_encrypt(krb5_key key, const krb5_data *ivec, krb5_crypto_iov *data,
     unsigned char iv[DES_BLOCK_SIZE];
     unsigned char iblock[DES_BLOCK_SIZE];
     unsigned char oblock[DES_BLOCK_SIZE];
-    struct iov_block_state input_pos, output_pos;
-    krb5_boolean empty;
+    struct iov_cursor cursor;
 
-    IOV_BLOCK_STATE_INIT(&input_pos);
-    IOV_BLOCK_STATE_INIT(&output_pos);
+    krb5_boolean empty;
 
     ret = validate(key, ivec, data, num_data, &empty);
     if (ret != 0 || empty)
@@ -101,15 +93,15 @@ k5_des_encrypt(krb5_key key, const krb5_data *ivec, krb5_crypto_iov *data,
 
     Des_SetKey(&des_ctx, key->keyblock.contents, iv, DES_ENCRYPTION);
 
+    k5_iov_cursor_init(&cursor, data, num_data, DES_BLOCK_SIZE, FALSE);
+
     for (;;) {
-        if (!krb5int_c_iov_get_block(iblock, DES_BLOCK_SIZE, data, 
-                                     num_data, &input_pos))
+        if (!k5_iov_cursor_get(&cursor, iblock))
             break;
    
         Des_CbcEncrypt(&des_ctx, oblock, iblock, DES_BLOCK_SIZE);
 
-        krb5int_c_iov_put_block(data, num_data, oblock, DES_BLOCK_SIZE, 
-                                &output_pos);
+        k5_iov_cursor_put(&cursor, oblock);
     }
     /* Store last encrypted block in IV */
     if (ivec != NULL) {
@@ -142,11 +134,8 @@ k5_des_decrypt(krb5_key key, const krb5_data *ivec, krb5_crypto_iov *data,
     unsigned char iv[DES_BLOCK_SIZE];
     unsigned char iblock[DES_BLOCK_SIZE];
     unsigned char oblock[DES_BLOCK_SIZE];
-    struct iov_block_state input_pos, output_pos;
+    struct iov_cursor cursor;
     krb5_boolean empty;
-
-    IOV_BLOCK_STATE_INIT(&input_pos);
-    IOV_BLOCK_STATE_INIT(&output_pos); 
 
     ret = validate(key, ivec, data, num_data, &empty);
     if (ret != 0 || empty)
@@ -163,15 +152,16 @@ k5_des_decrypt(krb5_key key, const krb5_data *ivec, krb5_crypto_iov *data,
 
     Des_SetKey(&des_ctx, key->keyblock.contents, iv, DES_DECRYPTION);
 
+    k5_iov_cursor_init(&cursor, data, num_data, DES_BLOCK_SIZE, FALSE);
+
     for (;;) {
-       if (!krb5int_c_iov_get_block(iblock, DES_BLOCK_SIZE, data, 
-                                    num_data, &input_pos))
-          break;
+       if (!k5_iov_cursor_get(&cursor, iblock))
+            break;
 
         Des_CbcDecrypt(&des_ctx, oblock, iblock, DES_BLOCK_SIZE);
 
-        krb5int_c_iov_put_block(data, num_data, oblock, DES_BLOCK_SIZE,
-                                &output_pos);
+        k5_iov_cursor_put(&cursor, oblock);
+
     }
 
     /* Store last encrypted block in IV */
@@ -205,10 +195,8 @@ k5_des_cbc_mac(krb5_key key, const krb5_crypto_iov *data, size_t num_data,
     unsigned char iv[DES_BLOCK_SIZE];
     unsigned char iblock[DES_BLOCK_SIZE];
     unsigned char oblock[DES_BLOCK_SIZE];
-    struct iov_block_state input_pos;
+    struct iov_cursor cursor;
     krb5_boolean empty;
-
-    IOV_BLOCK_STATE_INIT(&input_pos);
 
     ret = validate(key, ivec, data, num_data, &empty);
     if (ret != 0 || empty)
@@ -228,11 +216,12 @@ k5_des_cbc_mac(krb5_key key, const krb5_crypto_iov *data, size_t num_data,
 
     Des_SetKey(&des_ctx, key->keyblock.contents, iv, DES_ENCRYPTION);
 
+    k5_iov_cursor_init(&cursor, data, num_data, DES_BLOCK_SIZE, FALSE);
+
     for (;;) {
-        if (!krb5int_c_iov_get_block(iblock, DES_BLOCK_SIZE, data, 
-                                     num_data, &input_pos))
+        if (!k5_iov_cursor_get(&cursor, iblock))
             break;
-  
+
         Des_CbcEncrypt(&des_ctx, oblock, iblock, DES_BLOCK_SIZE);
     }
     /* Store last encrypted block as MAC */

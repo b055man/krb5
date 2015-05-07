@@ -34,7 +34,7 @@
 #include <cyassl/ctaocrypt/aes.h>
 
 static inline void
-xor_words(word* first, const word* second, word32 len) 
+xor_words(cyassl_word* first, const cyassl_word* second, word32 len) 
 {
     word32 i;
 
@@ -46,8 +46,8 @@ xor_words(word* first, const word* second, word32 len)
 static inline void
 xor_buf(byte* buffer, const byte* m, word32 len)
 {
-    if ( ((word)buffer | (word)m | len) & (WORD_SIZE == 0) ) {
-        xor_words( (word*)buffer, (const word*)m, len / WORD_SIZE);
+    if ( ((cyassl_word)buffer | (cyassl_word)m | len) & (CYASSL_WORD_SIZE == 0) ) {
+        xor_words( (cyassl_word*)buffer, (const cyassl_word*)m, len / CYASSL_WORD_SIZE);
     } else {
         word32 i;
         for (i = 0; i < len; i++) {
@@ -75,7 +75,6 @@ krb5int_aes_encrypt(krb5_key key, const krb5_data *ivec,
     Aes aes; 
     int ret = 0;
     size_t nblocks = 0, i = 0;
-    int N1_length;
     size_t  input_length;
     unsigned char iv[AES_BLOCK_SIZE];
     unsigned char iblock[AES_BLOCK_SIZE];
@@ -83,15 +82,8 @@ krb5int_aes_encrypt(krb5_key key, const krb5_data *ivec,
     unsigned char blockN1[AES_BLOCK_SIZE];   /* Last block (N-1) */
     unsigned char blockN2[AES_BLOCK_SIZE];   /* Second to last block (N-2) */
     
-    struct iov_block_state input_pos, output_pos;
-
-    /* Find the length of total data to encrypt */
-    for (i = 0, input_length = 0; i < num_data; i++) {
-        krb5_crypto_iov *iov = &data[i];
-
-        if (ENCRYPT_IOV(iov))
-            input_length += iov->data.length;
-    }
+    struct iov_cursor cursor;
+    input_length = iov_total_length(data, num_data, FALSE);
 
     /* Check if IV exists and is the correct size */
     if (ivec && ivec->data) {
@@ -102,9 +94,6 @@ krb5int_aes_encrypt(krb5_key key, const krb5_data *ivec,
         memset(iv, 0, sizeof(iv));
     }
 
-    IOV_BLOCK_STATE_INIT(&input_pos);
-    IOV_BLOCK_STATE_INIT(&output_pos);
-
     nblocks = (input_length + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
    
     /* Set up CTaoCrypt Aes structure with key */
@@ -113,35 +102,32 @@ krb5int_aes_encrypt(krb5_key key, const krb5_data *ivec,
     if(ret != 0)
         return KRB5_CRYPTO_INTERNAL;
 
+    k5_iov_cursor_init(&cursor, data, num_data, AES_BLOCK_SIZE, FALSE);
+
     /* If we only have 1 block, use regular AES-CBC mode */
     if (nblocks == 1) {
         if (input_length != AES_BLOCK_SIZE)
             return KRB5_BAD_MSIZE;
-        krb5int_c_iov_get_block(iblock, AES_BLOCK_SIZE, data, num_data, 
-                                &input_pos);
+        k5_iov_cursor_get(&cursor, iblock);
         AesCbcEncrypt(&aes, oblock, iblock, AES_BLOCK_SIZE);
-        krb5int_c_iov_put_block(data, num_data, oblock, AES_BLOCK_SIZE, 
-                                &output_pos);
+        k5_iov_cursor_put(&cursor, oblock);
     } 
     /* If we have > 1 block, use AES CBC-CTS mode */
     else if (nblocks > 1) {
         for (i = 0; i < nblocks - 2; i++) {
-            krb5int_c_iov_get_block(iblock, AES_BLOCK_SIZE, data, 
-                                    num_data, &input_pos);
+            k5_iov_cursor_get(&cursor, iblock);
+
             AesCbcEncrypt(&aes, oblock, iblock, AES_BLOCK_SIZE);
-            krb5int_c_iov_put_block(data, num_data, oblock, AES_BLOCK_SIZE,
-                                    &output_pos); 
+            k5_iov_cursor_put(&cursor, oblock);
         }
 
         /* Pad last block with 0's */
         memset(blockN1, 0, AES_BLOCK_SIZE);
-        N1_length = input_length % AES_BLOCK_SIZE;
 
         /* Get and encrypt last 2 blocks */
-        krb5int_c_iov_get_block(blockN2, AES_BLOCK_SIZE, data, num_data, 
-                                &input_pos);
-        krb5int_c_iov_get_block(blockN1, AES_BLOCK_SIZE, data, num_data, 
-                                &input_pos);
+        k5_iov_cursor_get(&cursor, blockN2);
+        k5_iov_cursor_get(&cursor, blockN1);
+
 
         /* Encrypt second-to-last block */
         AesCbcEncrypt(&aes, blockN2, blockN2, AES_BLOCK_SIZE);
@@ -149,10 +135,8 @@ krb5int_aes_encrypt(krb5_key key, const krb5_data *ivec,
         AesCbcEncrypt(&aes, blockN1, blockN1, AES_BLOCK_SIZE);
 
         /* Put last 2 blocks back in data buffer in reverse order */
-        krb5int_c_iov_put_block(data, num_data, blockN1, AES_BLOCK_SIZE, 
-                                &output_pos);
-        krb5int_c_iov_put_block(data, num_data, blockN2, AES_BLOCK_SIZE, 
-                                &output_pos);
+        k5_iov_cursor_put(&cursor, blockN1);
+        k5_iov_cursor_put(&cursor, blockN2);
     }
    
     if(ivec && ivec->data)
@@ -200,17 +184,11 @@ krb5int_aes_decrypt(krb5_key key, const krb5_data *ivec,
     unsigned char plainN2[AES_BLOCK_SIZE];   /* To hold decrypted blockN2 */
   
     unsigned char lastCBlock[AES_BLOCK_SIZE];   /* Storage for CTS hack */
-
-    struct iov_block_state input_pos, output_pos;
+  
+    struct iov_cursor cursor;
+    input_length = iov_total_length(data, num_data, FALSE);
+ 
    
-    /* Find the length of total data to encrypt */
-    for (i = 0, input_length = 0; i < num_data; i++) {
-        krb5_crypto_iov *iov = &data[i];
-
-        if (ENCRYPT_IOV(iov))
-            input_length += iov->data.length; 
-    }
-
     /* Check if IV exists and is the correct size */
     memset(iv,0,sizeof(iv));
     if (ivec && ivec->data) {
@@ -223,9 +201,6 @@ krb5int_aes_decrypt(krb5_key key, const krb5_data *ivec,
        store last cipher block in lastCBlock (below). */
     memcpy(lastCBlock, iv, AES_BLOCK_SIZE);
 
-    IOV_BLOCK_STATE_INIT(&input_pos);
-    IOV_BLOCK_STATE_INIT(&output_pos);
-
     nblocks = (input_length + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE;
 
     /* Set up CTaoCrypt Aes structure with key */
@@ -234,24 +209,22 @@ krb5int_aes_decrypt(krb5_key key, const krb5_data *ivec,
     if(ret != 0)
         return KRB5_CRYPTO_INTERNAL;
 
+    k5_iov_cursor_init(&cursor, data, num_data, AES_BLOCK_SIZE, FALSE);
+
     /* If we have 1 block, decrypt using AES CBC mode */
     if (nblocks == 1) {
         if (input_length != AES_BLOCK_SIZE)
             return KRB5_BAD_MSIZE;
-        krb5int_c_iov_get_block(iblock, AES_BLOCK_SIZE, data, num_data, 
-                                &input_pos);
+        k5_iov_cursor_get(&cursor, iblock);
         AesCbcDecrypt(&aes, oblock, iblock, AES_BLOCK_SIZE);
-        krb5int_c_iov_put_block(data, num_data, oblock, AES_BLOCK_SIZE, 
-                                &output_pos);
+        k5_iov_cursor_put(&cursor, oblock);
     } 
     else if (nblocks > 1) {
         /* Decrypt data up to last 2 blocks */
         for (i = 0; i < nblocks - 2; i++) {
-            krb5int_c_iov_get_block(iblock, AES_BLOCK_SIZE, data, num_data,
-                                    &input_pos);
+            k5_iov_cursor_get(&cursor, iblock);
             AesCbcDecrypt(&aes, oblock, iblock, AES_BLOCK_SIZE);
-            krb5int_c_iov_put_block(data, num_data, oblock, AES_BLOCK_SIZE,
-                                    &output_pos);
+            k5_iov_cursor_put(&cursor, oblock);
 
             /* Save last ciphertext block in case we need it for CTS hack */
             memcpy(lastCBlock, iblock, AES_BLOCK_SIZE);
@@ -260,10 +233,8 @@ krb5int_aes_decrypt(krb5_key key, const krb5_data *ivec,
         /* Pad last block with 0's */
         memset(blockN1, 0, AES_BLOCK_SIZE);
 
-        krb5int_c_iov_get_block(blockN2, AES_BLOCK_SIZE, data, num_data, 
-                                &input_pos);
-        krb5int_c_iov_get_block(blockN1, AES_BLOCK_SIZE, data, num_data, 
-                                &input_pos);
+        k5_iov_cursor_get(&cursor, blockN2);
+        k5_iov_cursor_get(&cursor, blockN1);
 
         /* Decrypt second to last block (N-2) into plainN2 */
         AesCbcDecrypt(&aes, plainN2, blockN2, AES_BLOCK_SIZE);
@@ -289,10 +260,8 @@ krb5int_aes_decrypt(krb5_key key, const krb5_data *ivec,
         xor_buf(plainN1, lastCBlock, AES_BLOCK_SIZE);   /* do correct XOR */
        
         /* Put last 2 blocks back in data buffer in reverse order */
-        krb5int_c_iov_put_block(data, num_data, plainN1, AES_BLOCK_SIZE, 
-                                &output_pos);
-        krb5int_c_iov_put_block(data, num_data, plainN2, AES_BLOCK_SIZE, 
-                                &output_pos); 
+        k5_iov_cursor_put(&cursor, plainN1);
+        k5_iov_cursor_put(&cursor, plainN2);
     }
 
     zap(iv, AES_BLOCK_SIZE);    

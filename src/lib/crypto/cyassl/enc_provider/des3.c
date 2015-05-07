@@ -33,25 +33,23 @@
 #include "crypto_int.h"
 #include <cyassl/ctaocrypt/des3.h>
 
+#define DES3_KEY_SIZE 24
+#define DES3_KEY_BYTES 21
+
 static krb5_error_code
 validate(krb5_key key, const krb5_data *ivec, const krb5_crypto_iov *data,
          size_t num_data, krb5_boolean *empty)
 {
-    size_t i, input_length;
-
-    for (i = 0, input_length = 0; i < num_data; i++) {
-        const krb5_crypto_iov *iov = &data[i];
-
-        if (ENCRYPT_IOV(iov))
-            input_length += iov->data.length;
-    }
+    size_t input_length;
 
     /* Is our key the correct length? */
-    if (key->keyblock.length != KRB5_MIT_DES3_KEYSIZE)
+    if (key->keyblock.length != DES3_KEY_SIZE)
         return(KRB5_BAD_KEYSIZE);
 
     /* Is our input a multiple of the block size, and
        the IV the correct length? */
+    input_length = iov_total_length(data, num_data, FALSE);
+
     if ((input_length%DES_BLOCK_SIZE) != 0 
         || (ivec != NULL && ivec->length != DES_BLOCK_SIZE))
         return(KRB5_BAD_MSIZE);
@@ -79,11 +77,10 @@ k5_des3_encrypt(krb5_key key, const krb5_data *ivec, krb5_crypto_iov *data,
     unsigned char iv[DES_BLOCK_SIZE];
     unsigned char iblock[DES_BLOCK_SIZE];
     unsigned char oblock[DES_BLOCK_SIZE];
-    struct iov_block_state input_pos, output_pos;
-    krb5_boolean empty;
+    //struct iov_block_state input_pos, output_pos;
+    struct iov_cursor cursor;
 
-    IOV_BLOCK_STATE_INIT(&input_pos);
-    IOV_BLOCK_STATE_INIT(&output_pos);
+    krb5_boolean empty;
 
     ret = validate(key, ivec, data, num_data, &empty);
     if (ret != 0 || empty)
@@ -100,16 +97,18 @@ k5_des3_encrypt(krb5_key key, const krb5_data *ivec, krb5_crypto_iov *data,
 
     Des3_SetKey(&des3, key->keyblock.contents, iv, DES_ENCRYPTION);
 
+    k5_iov_cursor_init(&cursor, data, num_data, DES_BLOCK_SIZE, FALSE);
+
     for (;;) {
 
-        if (!krb5int_c_iov_get_block(iblock, DES_BLOCK_SIZE,
-                                     data, num_data, &input_pos))
+        if (!k5_iov_cursor_get(&cursor, iblock))
             break;
+
 
         Des3_CbcEncrypt(&des3, oblock, iblock, DES_BLOCK_SIZE);
 
-        krb5int_c_iov_put_block(data, num_data,
-                                oblock, DES_BLOCK_SIZE, &output_pos);
+        k5_iov_cursor_put(&cursor, oblock);
+
     }
 
     if (ivec != NULL)
@@ -141,12 +140,9 @@ k5_des3_decrypt(krb5_key key, const krb5_data *ivec, krb5_crypto_iov *data,
     unsigned char iv[DES_BLOCK_SIZE];
     unsigned char iblock[DES_BLOCK_SIZE];
     unsigned char oblock[DES_BLOCK_SIZE];
-    struct iov_block_state input_pos, output_pos;
+    struct iov_cursor cursor;
     krb5_boolean empty;
     
-    IOV_BLOCK_STATE_INIT(&input_pos);
-    IOV_BLOCK_STATE_INIT(&output_pos);
-
     ret = validate(key, ivec, data, num_data, &empty);
     if (ret != 0 || empty)
         return ret;
@@ -162,16 +158,17 @@ k5_des3_decrypt(krb5_key key, const krb5_data *ivec, krb5_crypto_iov *data,
 
     Des3_SetKey(&des3, key->keyblock.contents, iv, DES_DECRYPTION);
 
+    k5_iov_cursor_init(&cursor, data, num_data, DES_BLOCK_SIZE, FALSE);
+
     for (;;) {
 
-        if (!krb5int_c_iov_get_block(iblock, DES_BLOCK_SIZE,
-                                     data, num_data, &input_pos))
+       if (!k5_iov_cursor_get(&cursor, iblock))
             break;
 
         Des3_CbcDecrypt(&des3, oblock, iblock, DES_BLOCK_SIZE);
 
-        krb5int_c_iov_put_block(data, num_data, oblock, DES_BLOCK_SIZE,
-                                &output_pos);
+        k5_iov_cursor_put(&cursor, oblock);
+
     }
 
     if (ivec != NULL)
@@ -186,7 +183,7 @@ k5_des3_decrypt(krb5_key key, const krb5_data *ivec, krb5_crypto_iov *data,
 
 const struct krb5_enc_provider krb5int_enc_des3 = {
     DES_BLOCK_SIZE,
-    KRB5_MIT_DES3_KEY_BYTES, KRB5_MIT_DES3_KEYSIZE,
+    DES3_KEY_BYTES, DES3_KEY_SIZE,
     k5_des3_encrypt,
     k5_des3_decrypt,
     NULL,
