@@ -165,7 +165,7 @@ init_state(struct fortuna_state *st)
 static void
 inc_counter(struct fortuna_state *st)
 {
-    UINT64_TYPE val;
+    uint64_t val;
 
     val = load_64_le(st->counter) + 1;
     store_64_le(val, st->counter);
@@ -391,9 +391,7 @@ krb5_c_random_add_entropy(krb5_context context, unsigned int randsource,
     ret = krb5int_crypto_init();
     if (ret)
         return ret;
-    ret = k5_mutex_lock(&fortuna_lock);
-    if (ret)
-        return ret;
+    k5_mutex_lock(&fortuna_lock);
     if (randsource == KRB5_C_RANDSOURCE_OSRAND ||
         randsource == KRB5_C_RANDSOURCE_TRUSTEDPARTY) {
         /* These sources contain enough entropy that we should use them
@@ -414,7 +412,6 @@ krb5_c_random_add_entropy(krb5_context context, unsigned int randsource,
 krb5_error_code KRB5_CALLCONV
 krb5_c_random_make_octets(krb5_context context, krb5_data *outdata)
 {
-    krb5_error_code ret;
 #ifdef _WIN32
     DWORD pid = GetCurrentProcessId();
 #else
@@ -422,12 +419,14 @@ krb5_c_random_make_octets(krb5_context context, krb5_data *outdata)
 #endif
     unsigned char pidbuf[4];
 
-    ret = k5_mutex_lock(&fortuna_lock);
-    if (ret)
-        return ret;
+    k5_mutex_lock(&fortuna_lock);
 
     if (!have_entropy) {
         k5_mutex_unlock(&fortuna_lock);
+        if (context != NULL) {
+            k5_set_error(&context->err, KRB5_CRYPTO_INTERNAL,
+                         _("Random number generator could not be seeded"));
+        }
         return KRB5_CRYPTO_INTERNAL;
     }
 

@@ -35,10 +35,10 @@ krb5_get_server_rcache(krb5_context context, const krb5_data *piece,
                        krb5_rcache *rcptr)
 {
     krb5_rcache rcache = 0;
-    char *cachename = 0, *cachetype;
+    char *cachetype;
     krb5_error_code retval;
     unsigned int i;
-    struct k5buf buf;
+    struct k5buf buf = EMPTY_K5BUF;
 #ifdef HAVE_GETEUID
     unsigned long uid = geteuid();
 #endif
@@ -48,26 +48,25 @@ krb5_get_server_rcache(krb5_context context, const krb5_data *piece,
 
     cachetype = krb5_rc_default_type(context);
 
-    krb5int_buf_init_dynamic(&buf);
-    krb5int_buf_add(&buf, cachetype);
-    krb5int_buf_add(&buf, ":");
+    k5_buf_init_dynamic(&buf);
+    k5_buf_add(&buf, cachetype);
+    k5_buf_add(&buf, ":");
     for (i = 0; i < piece->length; i++) {
         if (piece->data[i] == '-')
-            krb5int_buf_add(&buf, "--");
+            k5_buf_add(&buf, "--");
         else if (!isvalidrcname((int) piece->data[i]))
-            krb5int_buf_add_fmt(&buf, "-%03o", piece->data[i]);
+            k5_buf_add_fmt(&buf, "-%03o", piece->data[i]);
         else
-            krb5int_buf_add_len(&buf, &piece->data[i], 1);
+            k5_buf_add_len(&buf, &piece->data[i], 1);
     }
 #ifdef HAVE_GETEUID
-    krb5int_buf_add_fmt(&buf, "_%lu", uid);
+    k5_buf_add_fmt(&buf, "_%lu", uid);
 #endif
 
-    cachename = krb5int_buf_data(&buf);
-    if (cachename == NULL)
+    if (k5_buf_status(&buf) != 0)
         return ENOMEM;
 
-    retval = krb5_rc_resolve_full(context, &rcache, cachename);
+    retval = krb5_rc_resolve_full(context, &rcache, buf.data);
     if (retval)
         goto cleanup;
 
@@ -83,7 +82,6 @@ krb5_get_server_rcache(krb5_context context, const krb5_data *piece,
 cleanup:
     if (rcache)
         krb5_rc_close(context, rcache);
-    if (cachename)
-        free(cachename);
+    k5_buf_free(&buf);
     return retval;
 }

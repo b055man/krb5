@@ -13,14 +13,6 @@
 #endif
 #include <errno.h>
 
-#ifdef HAVE_STDINT_H
-# include <stdint.h>
-#endif
-#ifdef HAVE_INTTYPES_H
-# include <inttypes.h>
-#endif
-typedef int32_t prof_int32;
-
 /* Create a vtable profile, possibly with a library handle.  The new profile
  * takes ownership of the handle refcount on success. */
 static errcode_t
@@ -156,7 +148,7 @@ init_load_module(const char *modspec, profile_t *ret_profile)
 cleanup:
     free(modpath);
     free(residual);
-    krb5int_clear_error(&einfo);
+    k5_clear_error(&einfo);
     if (err) {
         if (have_cbdata && vtable.cleanup)
             vtable.cleanup(cbdata);
@@ -278,13 +270,7 @@ copy_vtable_profile(profile_t profile, profile_t *ret_new_profile)
 
     /* Increment the refcount on the library handle if there is one. */
     if (profile->lib_handle) {
-        err = k5_mutex_lock(&profile->lib_handle->lock);
-        if (err) {
-            /* Don't decrement the refcount we failed to increment. */
-            new_profile->lib_handle = NULL;
-            profile_abandon(new_profile);
-            return err;
-        }
+        k5_mutex_lock(&profile->lib_handle->lock);
         profile->lib_handle->refcount++;
         k5_mutex_unlock(&profile->lib_handle->lock);
     }
@@ -479,7 +465,6 @@ void KRB5_CALLCONV
 profile_abandon(profile_t profile)
 {
     prf_file_t      p, next;
-    errcode_t       err;
 
     if (!profile || profile->magic != PROF_MAGIC_PROFILE)
         return;
@@ -489,13 +474,13 @@ profile_abandon(profile_t profile)
             profile->vt->cleanup(profile->cbdata);
         if (profile->lib_handle) {
             /* Decrement the refcount on the handle and maybe free it. */
-            err = k5_mutex_lock(&profile->lib_handle->lock);
-            if (!err && --profile->lib_handle->refcount == 0) {
+            k5_mutex_lock(&profile->lib_handle->lock);
+            if (--profile->lib_handle->refcount == 0) {
                 krb5int_close_plugin(profile->lib_handle->plugin_handle);
                 k5_mutex_unlock(&profile->lib_handle->lock);
                 k5_mutex_destroy(&profile->lib_handle->lock);
                 free(profile->lib_handle);
-            } else if (!err)
+            } else
                 k5_mutex_unlock(&profile->lib_handle->lock);
         }
         free(profile->vt);
@@ -542,20 +527,20 @@ errcode_t profile_ser_size(const char *unused, profile_t profile,
     size_t      required;
     prf_file_t  pfp;
 
-    required = 3*sizeof(prof_int32);
+    required = 3*sizeof(int32_t);
     for (pfp = profile->first_file; pfp; pfp = pfp->next) {
-        required += sizeof(prof_int32);
+        required += sizeof(int32_t);
         required += strlen(pfp->data->filespec);
     }
     *sizep += required;
     return 0;
 }
 
-static void pack_int32(prof_int32 oval, unsigned char **bufpp, size_t *remainp)
+static void pack_int32(int32_t oval, unsigned char **bufpp, size_t *remainp)
 {
     store_32_be(oval, *bufpp);
-    *bufpp += sizeof(prof_int32);
-    *remainp -= sizeof(prof_int32);
+    *bufpp += sizeof(int32_t);
+    *remainp -= sizeof(int32_t);
 }
 
 errcode_t profile_ser_externalize(const char *unused, profile_t profile,
@@ -566,7 +551,7 @@ errcode_t profile_ser_externalize(const char *unused, profile_t profile,
     unsigned char       *bp;
     size_t              remain;
     prf_file_t          pfp;
-    prof_int32          fcount, slen;
+    int32_t             fcount, slen;
 
     required = 0;
     bp = *bufpp;
@@ -582,7 +567,7 @@ errcode_t profile_ser_externalize(const char *unused, profile_t profile,
             pack_int32(PROF_MAGIC_PROFILE, &bp, &remain);
             pack_int32(fcount, &bp, &remain);
             for (pfp = profile->first_file; pfp; pfp = pfp->next) {
-                slen = (prof_int32) strlen(pfp->data->filespec);
+                slen = (int32_t) strlen(pfp->data->filespec);
                 pack_int32(slen, &bp, &remain);
                 if (slen) {
                     memcpy(bp, pfp->data->filespec, (size_t) slen);
@@ -599,13 +584,13 @@ errcode_t profile_ser_externalize(const char *unused, profile_t profile,
     return(retval);
 }
 
-static int unpack_int32(prof_int32 *intp, unsigned char **bufpp,
+static int unpack_int32(int32_t *intp, unsigned char **bufpp,
                         size_t *remainp)
 {
-    if (*remainp >= sizeof(prof_int32)) {
+    if (*remainp >= sizeof(int32_t)) {
         *intp = load_32_be(*bufpp);
-        *bufpp += sizeof(prof_int32);
-        *remainp -= sizeof(prof_int32);
+        *bufpp += sizeof(int32_t);
+        *remainp -= sizeof(int32_t);
         return 0;
     }
     else
@@ -619,7 +604,7 @@ errcode_t profile_ser_internalize(const char *unused, profile_t *profilep,
     unsigned char   *bp;
     size_t          remain;
     int                     i;
-    prof_int32              fcount, tmp;
+    int32_t                 fcount, tmp;
     profile_filespec_t              *flist = 0;
 
     bp = *bufpp;

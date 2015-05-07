@@ -31,10 +31,9 @@
  *  infrastructure
  */
 
-#include "fake-addrinfo.h"
 #include "k5-int.h"
+#include "fake-addrinfo.h"
 #include "os-proto.h"
-#include "cm.h"
 #include "../krb/auth_con.h"
 #include "../krb/int-proto.h"
 
@@ -60,25 +59,25 @@ struct sendto_callback_context {
 
 static krb5_error_code
 locate_kpasswd(krb5_context context, const krb5_data *realm,
-               struct serverlist *serverlist, int socktype)
+               struct serverlist *serverlist, krb5_boolean no_udp)
 {
     krb5_error_code code;
 
     code = k5_locate_server(context, realm, serverlist, locate_service_kpasswd,
-                            socktype);
+                            no_udp);
 
     if (code == KRB5_REALM_CANT_RESOLVE || code == KRB5_REALM_UNKNOWN) {
         code = k5_locate_server(context, realm, serverlist,
-                                locate_service_kadmin, SOCK_STREAM);
+                                locate_service_kadmin, TRUE);
         if (!code) {
-            /* Success with admin_server but now we need to change the
-               port number to use DEFAULT_KPASSWD_PORT and the socktype.  */
+            /* Success with admin_server but now we need to change the port
+             * number to use DEFAULT_KPASSWD_PORT and the transport. */
             size_t i;
             for (i = 0; i < serverlist->nservers; i++) {
                 struct server_entry *s = &serverlist->servers[i];
                 krb5_ui_2 kpasswd_port = htons(DEFAULT_KPASSWD_PORT);
-                if (socktype != SOCK_STREAM)
-                    s->socktype = socktype;
+                if (!no_udp && s->transport == TCP)
+                    s->transport = TCP_OR_UDP;
                 if (s->hostname != NULL)
                     s->port = kpasswd_port;
                 else if (s->family == AF_INET)
@@ -100,23 +99,21 @@ locate_kpasswd(krb5_context context, const krb5_data *realm,
 
 
 static void
-kpasswd_sendto_msg_cleanup (void* callback_context, krb5_data* message)
+kpasswd_sendto_msg_cleanup(void *data, krb5_data *message)
 {
-    struct sendto_callback_context *ctx = callback_context;
+    struct sendto_callback_context *ctx = data;
 
     krb5_free_data_contents(ctx->context, message);
 }
 
 
 static int
-kpasswd_sendto_msg_callback(struct conn_state *conn,
-                            void *callback_context,
-                            krb5_data *message)
+kpasswd_sendto_msg_callback(SOCKET fd, void *data, krb5_data *message)
 {
     krb5_error_code                     code = 0;
     struct sockaddr_storage             local_addr;
     krb5_address                        local_kaddr;
-    struct sendto_callback_context      *ctx = callback_context;
+    struct sendto_callback_context      *ctx = data;
     GETSOCKNAME_ARG3_TYPE               addrlen;
     krb5_data                           output;
 
@@ -127,7 +124,7 @@ kpasswd_sendto_msg_callback(struct conn_state *conn,
      */
     addrlen = sizeof(local_addr);
 
-    if (getsockname(conn->fd, ss2sa(&local_addr), &addrlen) < 0) {
+    if (getsockname(fd, ss2sa(&local_addr), &addrlen) < 0) {
         code = SOCKET_ERRNO;
         goto cleanup;
     }
@@ -156,16 +153,11 @@ kpasswd_sendto_msg_callback(struct conn_state *conn,
         local_kaddr.magic = addrs[0]->magic;
         local_kaddr.addrtype = addrs[0]->addrtype;
         local_kaddr.length = addrs[0]->length;
-        local_kaddr.contents = malloc(addrs[0]->length);
-        if (local_kaddr.contents == NULL && addrs[0]->length != 0) {
-            code = ENOMEM;
-            krb5_free_addresses(ctx->context, addrs);
-            goto cleanup;
-        }
-        if (addrs[0]->length)
-            memcpy(local_kaddr.contents, addrs[0]->contents, addrs[0]->length);
-
+        local_kaddr.contents = k5memdup(addrs[0]->contents, addrs[0]->length,
+                                        &code);
         krb5_free_addresses(ctx->context, addrs);
+        if (local_kaddr.contents == NULL)
+            goto cleanup;
     }
 
 
@@ -222,8 +214,7 @@ change_set_password(krb5_context context,
                     krb5_data *result_string)
 {
     krb5_data                   chpw_rep;
-    krb5_address                remote_kaddr;
-    krb5_boolean                use_tcp = 0;
+    krb5_boolean                no_udp = FALSE;
     GETSOCKNAME_ARG3_TYPE       addrlen;
     krb5_error_code             code = 0;
     char                        *code_string;
@@ -256,23 +247,23 @@ change_set_password(krb5_context context,
     callback_ctx.local_seq_num = callback_ctx.auth_context->local_seq_number;
 
     do {
-        int socktype = (use_tcp ? SOCK_STREAM : SOCK_DGRAM);
-        if ((code = locate_kpasswd(callback_ctx.context,
-                                   krb5_princ_realm(callback_ctx.context,
-                                                    creds->server),
-                                   &sl, socktype)))
+        k5_transport_strategy strategy = no_udp ? NO_UDP : UDP_FIRST;
+
+        code = locate_kpasswd(callback_ctx.context, &creds->server->realm, &sl,
+                              no_udp);
+        if (code)
             break;
 
         addrlen = sizeof(remote_addr);
 
-        callback_info.context = (void*) &callback_ctx;
+        callback_info.data = &callback_ctx;
         callback_info.pfn_callback = kpasswd_sendto_msg_callback;
         callback_info.pfn_cleanup = kpasswd_sendto_msg_cleanup;
         krb5_free_data_contents(callback_ctx.context, &chpw_rep);
 
-        code = k5_sendto(callback_ctx.context, NULL, &sl, socktype, 0,
-                         &callback_info, &chpw_rep, ss2sa(&remote_addr),
-                         &addrlen, NULL, NULL, NULL);
+        code = k5_sendto(callback_ctx.context, NULL, &creds->server->realm,
+                         &sl, strategy, &callback_info, &chpw_rep,
+                         ss2sa(&remote_addr), &addrlen, NULL, NULL, NULL);
         if (code) {
             /*
              * Here we may want to switch to TCP on some errors.
@@ -281,35 +272,15 @@ change_set_password(krb5_context context,
             break;
         }
 
-        if (remote_addr.ss_family == AF_INET) {
-            remote_kaddr.addrtype = ADDRTYPE_INET;
-            remote_kaddr.length = sizeof(ss2sin(&remote_addr)->sin_addr);
-            remote_kaddr.contents =
-                (krb5_octet *) &ss2sin(&remote_addr)->sin_addr;
-        } else if (remote_addr.ss_family == AF_INET6) {
-            remote_kaddr.addrtype = ADDRTYPE_INET6;
-            remote_kaddr.length = sizeof(ss2sin6(&remote_addr)->sin6_addr);
-            remote_kaddr.contents =
-                (krb5_octet *) &ss2sin6(&remote_addr)->sin6_addr;
-        } else {
-            break;
-        }
-
-        if ((code = krb5_auth_con_setaddrs(callback_ctx.context,
-                                           callback_ctx.auth_context,
-                                           NULL,
-                                           &remote_kaddr)))
-            break;
-
         code = krb5int_rd_chpw_rep(callback_ctx.context,
                                    callback_ctx.auth_context,
                                    &chpw_rep, &local_result_code,
                                    result_string);
 
         if (code) {
-            if (code == KRB5KRB_ERR_RESPONSE_TOO_BIG && !use_tcp) {
+            if (code == KRB5KRB_ERR_RESPONSE_TOO_BIG && !no_udp) {
                 k5_free_serverlist(&sl);
-                use_tcp = 1;
+                no_udp = 1;
                 continue;
             }
 
@@ -335,9 +306,9 @@ change_set_password(krb5_context context,
             strncpy(result_code_string->data, code_string, result_code_string->length);
         }
 
-        if (code == KRB5KRB_ERR_RESPONSE_TOO_BIG && !use_tcp) {
+        if (code == KRB5KRB_ERR_RESPONSE_TOO_BIG && !no_udp) {
             k5_free_serverlist(&sl);
-            use_tcp = 1;
+            no_udp = 1;
         } else {
             break;
         }
@@ -409,8 +380,8 @@ krb5_set_password_using_ccache(krb5_context context,
     code = krb5_cc_get_principal (context, ccache, &creds.client);
     if (!code) {
         code = krb5_build_principal(context, &creds.server,
-                                    krb5_princ_realm(context, change_password_for)->length,
-                                    krb5_princ_realm(context, change_password_for)->data,
+                                    change_password_for->realm.length,
+                                    change_password_for->realm.data,
                                     "kadmin", "changepw", NULL);
         if (!code) {
             code = krb5_get_credentials(context, 0, ccache, &creds, &credsp);

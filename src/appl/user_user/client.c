@@ -24,17 +24,14 @@
  * or implied warranty.
  */
 
+#include "k5-int.h"
+#include "com_err.h"
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-
-#include "k5-int.h"
-#include "com_err.h"
 
 int main (int argc, char *argv[])
 {
@@ -240,8 +237,8 @@ int main (int argc, char *argv[])
 
 #if 1
     /* read the ap_req to get the session key */
-    retval = krb5_rd_req(context, &auth_context, &reply,
-                         NULL, NULL, NULL, &ticket);
+    retval = krb5_rd_req(context, &auth_context, &reply, creds.client, NULL,
+                         NULL, &ticket);
     free(reply.data);
 #else
     retval = krb5_recvauth(context, &auth_context, (krb5_pointer)&s, "???",

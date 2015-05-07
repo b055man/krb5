@@ -51,6 +51,7 @@
 
 #include "k5-int.h"
 #include "int-proto.h"
+#include "os-proto.h"
 #include <ctype.h>
 #include "brand.c"
 #include "../krb5_libinit.h"
@@ -63,6 +64,7 @@ static krb5_enctype default_enctype_list[] = {
     ENCTYPE_AES256_CTS_HMAC_SHA1_96, ENCTYPE_AES128_CTS_HMAC_SHA1_96,
     ENCTYPE_DES3_CBC_SHA1,
     ENCTYPE_ARCFOUR_HMAC,
+    ENCTYPE_CAMELLIA128_CTS_CMAC, ENCTYPE_CAMELLIA256_CTS_CMAC,
     ENCTYPE_DES_CBC_CRC, ENCTYPE_DES_CBC_MD5, ENCTYPE_DES_CBC_MD4,
     0
 };
@@ -148,7 +150,7 @@ krb5_init_context_profile(profile_t profile, krb5_flags flags,
        of using uint64_t, the possibility does exist that we're
        wrong.  */
     {
-        krb5_ui_8 i64;
+        uint64_t i64;
         assert(sizeof(i64) == 8);
         i64 = 0, i64--, i64 >>= 62;
         assert(i64 == 3);
@@ -188,13 +190,14 @@ krb5_init_context_profile(profile_t profile, krb5_flags flags,
 
     ctx->profile_secure = (flags & KRB5_INIT_CONTEXT_SECURE) != 0;
 
-    if ((retval = krb5_os_init_context(ctx, profile, flags)) != 0)
+    retval = k5_os_init_context(ctx, profile, flags);
+    if (retval)
         goto cleanup;
 
     ctx->trace_callback = NULL;
 #ifndef DISABLE_TRACING
     if (!ctx->profile_secure)
-        krb5int_init_trace(ctx);
+        k5_init_trace(ctx);
 #endif
 
     retval = get_boolean(ctx, KRB5_CONF_ALLOW_WEAK_CRYPTO, 0, &tmp);
@@ -206,6 +209,11 @@ krb5_init_context_profile(profile_t profile, krb5_flags flags,
     if (retval)
         goto cleanup;
     ctx->ignore_acceptor_hostname = tmp;
+
+    retval = get_boolean(ctx, KRB5_CONF_DNS_CANONICALIZE_HOSTNAME, 1, &tmp);
+    if (retval)
+        goto cleanup;
+    ctx->dns_canonicalize_hostname = tmp;
 
     /* initialize the prng (not well, but passable) */
     if ((retval = krb5_c_random_os_entropy( ctx, 0, NULL)) !=0)
@@ -286,7 +294,7 @@ krb5_free_context(krb5_context ctx)
 {
     if (ctx == NULL)
         return;
-    krb5_os_free_context(ctx);
+    k5_os_free_context(ctx);
 
     free(ctx->in_tkt_etypes);
     ctx->in_tkt_etypes = NULL;
@@ -307,8 +315,11 @@ krb5_free_context(krb5_context ctx)
 #endif
 
     k5_ccselect_free_context(ctx);
+    k5_hostrealm_free_context(ctx);
+    k5_localauth_free_context(ctx);
     k5_plugin_free_context(ctx);
     free(ctx->plugin_base_dir);
+    free(ctx->tls);
 
     ctx->magic = 0;
     free(ctx);
@@ -468,11 +479,9 @@ krb5int_parse_enctype_list(krb5_context context, const char *profkey,
             mod_list(ENCTYPE_AES128_CTS_HMAC_SHA1_96, sel, weak, &list);
         } else if (strcasecmp(token, "rc4") == 0) {
             mod_list(ENCTYPE_ARCFOUR_HMAC, sel, weak, &list);
-#ifdef CAMELLIA
         } else if (strcasecmp(token, "camellia") == 0) {
             mod_list(ENCTYPE_CAMELLIA256_CTS_CMAC, sel, weak, &list);
             mod_list(ENCTYPE_CAMELLIA128_CTS_CMAC, sel, weak, &list);
-#endif
         } else if (krb5_string_to_enctype(token, &etype) == 0) {
             /* Set a specific enctype. */
             mod_list(etype, sel, weak, &list);
@@ -544,7 +553,7 @@ krb5_get_default_in_tkt_ktypes(krb5_context context, krb5_enctype **ktypes)
 
 void
 KRB5_CALLCONV
-krb5_free_ktypes (krb5_context context, krb5_enctype *val)
+krb5_free_enctypes(krb5_context context, krb5_enctype *val)
 {
     free (val);
 }
@@ -583,6 +592,6 @@ krb5_is_permitted_enctype(krb5_context context, krb5_enctype etype)
     if (krb5_get_permitted_enctypes(context, &list))
         return FALSE;
     ret = k5_etypes_contains(list, etype);
-    krb5_free_ktypes(context, list);
+    krb5_free_enctypes(context, list);
     return ret;
 }

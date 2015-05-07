@@ -4,7 +4,7 @@
  *
  */
 
-#include <k5-platform.h>
+#include <k5-int.h>
 #include <gssrpc/rpc.h>
 #include <gssapi/gssapi_krb5.h> /* for gss_nt_krb5_name */
 #include <syslog.h>
@@ -12,9 +12,6 @@
 #include <krb5.h>
 #include <kadm5/admin.h>
 #include <adm_proto.h>
-#ifdef HAVE_ARPA_INET_H
-#include <arpa/inet.h>
-#endif
 #include "misc.h"
 #include "kadm5/server_internal.h"
 
@@ -69,9 +66,9 @@ void kadm_1(rqstp, transp)
      if (rqstp->rq_cred.oa_flavor != AUTH_GSSAPI &&
 	 !check_rpcsec_auth(rqstp)) {
 	  krb5_klog_syslog(LOG_ERR, "Authentication attempt failed: %s, "
-		 "RPC authentication flavor %d",
-		 inet_ntoa(rqstp->rq_xprt->xp_raddr.sin_addr),
-		 rqstp->rq_cred.oa_flavor);
+			   "RPC authentication flavor %d",
+			   client_addr(rqstp->rq_xprt),
+			   rqstp->rq_cred.oa_flavor);
 	  svcerr_weakauth(transp);
 	  return;
      }
@@ -227,8 +224,7 @@ void kadm_1(rqstp, transp)
 
      default:
 	  krb5_klog_syslog(LOG_ERR, "Invalid KADM5 procedure number: %s, %d",
-		 inet_ntoa(rqstp->rq_xprt->xp_raddr.sin_addr),
-		 rqstp->rq_proc);
+			   client_addr(rqstp->rq_xprt), rqstp->rq_proc);
 	  svcerr_noproc(transp);
 	  return;
      }
@@ -278,8 +274,7 @@ check_rpcsec_auth(struct svc_req *rqstp)
      if (maj_stat != GSS_S_COMPLETE) {
 	  krb5_klog_syslog(LOG_ERR, _("check_rpcsec_auth: failed "
 				      "inquire_context, stat=%u"), maj_stat);
-	  log_badauth(maj_stat, min_stat,
-		      &rqstp->rq_xprt->xp_raddr, NULL);
+	  log_badauth(maj_stat, min_stat, rqstp->rq_xprt, NULL);
 	  goto fail_name;
      }
 
@@ -301,14 +296,8 @@ check_rpcsec_auth(struct svc_req *rqstp)
      c1 = krb5_princ_component(kctx, princ, 0);
      c2 = krb5_princ_component(kctx, princ, 1);
      realm = krb5_princ_realm(kctx, princ);
-     if (strncmp(handle->params.realm, realm->data, realm->length) == 0
-	 && strncmp("kadmin", c1->data, c1->length) == 0) {
-
-	  if (strncmp("history", c2->data, c2->length) == 0)
-	       goto fail_princ;
-	  else
-	       success = 1;
-     }
+     success = data_eq_string(*realm, handle->params.realm) &&
+	     data_eq_string(*c1, "kadmin") && !data_eq_string(*c2, "history");
 
 fail_princ:
      if (!success) {
@@ -335,8 +324,7 @@ gss_to_krb5_name_1(struct svc_req *rqstp, krb5_context ctx, gss_name_t gss_name,
      if ((status != GSS_S_COMPLETE) || (gss_type != gss_nt_krb5_name)) {
 	  krb5_klog_syslog(LOG_ERR, _("gss_to_krb5_name: failed display_name "
 				      "status %d"), status);
-	  log_badauth(status, minor_stat,
-		      &rqstp->rq_xprt->xp_raddr, NULL);
+	  log_badauth(status, minor_stat, rqstp->rq_xprt, NULL);
 	  return 0;
      }
      str = malloc(gss_str->length +1);

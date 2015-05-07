@@ -58,11 +58,7 @@ kg_impersonate_name(OM_uint32 *minor_status,
     if (impersonator_cred->req_enctypes != NULL)
         in_creds.keyblock.enctype = impersonator_cred->req_enctypes[0];
 
-    code = k5_mutex_lock(&user->lock);
-    if (code != 0) {
-        *minor_status = code;
-        return GSS_S_FAILURE;
-    }
+    k5_mutex_lock(&user->lock);
 
     if (user->ad_context != NULL) {
         code = krb5_authdata_export_authdata(context,
@@ -117,6 +113,7 @@ krb5_gss_acquire_cred_impersonate_name(OM_uint32 *minor_status,
 {
     OM_uint32 major_status;
     krb5_error_code code;
+    krb5_gss_cred_id_t imp_cred = (krb5_gss_cred_id_t)impersonator_cred_handle;
     krb5_gss_cred_id_t cred;
     krb5_context context;
 
@@ -132,6 +129,11 @@ krb5_gss_acquire_cred_impersonate_name(OM_uint32 *minor_status,
     if (cred_usage != GSS_C_INITIATE) {
         *minor_status = (OM_uint32)G_BAD_USAGE;
         return GSS_S_FAILURE;
+    }
+
+    if (imp_cred->usage != GSS_C_INITIATE && imp_cred->usage != GSS_C_BOTH) {
+        *minor_status = 0;
+        return GSS_S_NO_CRED;
     }
 
     *output_cred_handle = GSS_C_NO_CREDENTIAL;
@@ -152,7 +154,7 @@ krb5_gss_acquire_cred_impersonate_name(OM_uint32 *minor_status,
     }
 
     major_status = kg_impersonate_name(minor_status,
-                                       (krb5_gss_cred_id_t)impersonator_cred_handle,
+                                       imp_cred,
                                        (krb5_gss_name_t)desired_name,
                                        time_req,
                                        &cred,
@@ -162,7 +164,7 @@ krb5_gss_acquire_cred_impersonate_name(OM_uint32 *minor_status,
     if (!GSS_ERROR(major_status))
         *output_cred_handle = (gss_cred_id_t)cred;
 
-    k5_mutex_unlock(&((krb5_gss_cred_id_t)impersonator_cred_handle)->lock);
+    k5_mutex_unlock(&imp_cred->lock);
     krb5_free_context(context);
 
     return major_status;
@@ -193,7 +195,7 @@ make_proxy_cred(krb5_context context, krb5_gss_cred_id_t cred,
 
     data = string2data(str);
     code = krb5_cc_set_config(context, cred->ccache, NULL,
-                              KRB5_CONF_PROXY_IMPERSONATOR, &data);
+                              KRB5_CC_CONF_PROXY_IMPERSONATOR, &data);
     krb5_free_unparsed_name(context, str);
     if (code)
         return code;

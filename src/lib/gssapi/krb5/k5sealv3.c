@@ -26,11 +26,8 @@
 
 /* draft-ietf-krb-wg-gssapi-cfx-05 */
 
-#include <assert.h>
-#include "k5-platform.h"        /* for 64-bit support */
-#include "k5-int.h"             /* for zap() */
+#include "k5-int.h"
 #include "gssapiP_krb5.h"
-#include <stdarg.h>
 
 int
 gss_krb5int_rotate_left (void *ptr, size_t bufsiz, size_t rc)
@@ -126,10 +123,9 @@ gss_krb5int_make_seal_token_v3 (krb5_context context,
 #else
         ec = 0;
 #endif
-        plain.length = message->length + 16 + ec;
-        plain.data = malloc(message->length + 16 + ec);
-        if (plain.data == NULL)
-            return ENOMEM;
+        err = alloc_data(&plain, message->length + 16 + ec);
+        if (err)
+            return err;
 
         /* Get size of ciphertext.  */
         bufsize = 16 + krb5_encrypt_size (plain.length, key->keyblock.enctype);
@@ -190,10 +186,9 @@ gss_krb5int_make_seal_token_v3 (krb5_context context,
         tok_id = KG2_TOK_WRAP_MSG;
 
     wrap_with_checksum:
-        plain.length = message->length + 16;
-        plain.data = malloc(message->length + 16);
-        if (plain.data == NULL)
-            return ENOMEM;
+        err = alloc_data(&plain, message->length + 16);
+        if (err)
+            return err;
 
         err = krb5_c_checksum_length(context, cksumtype, &cksumsize);
         if (err)
@@ -307,7 +302,7 @@ gss_krb5int_unseal_token_v3(krb5_context *contextptr,
 {
     krb5_context context = *contextptr;
     krb5_data plain;
-    gssint_uint64 seqnum;
+    uint64_t seqnum;
     size_t ec, rrc;
     int key_usage;
     unsigned char acceptor_flag;
@@ -442,8 +437,7 @@ gss_krb5int_unseal_token_v3(krb5_context *contextptr,
                Rotate the first two.  */
             store_16_be(0, ptr+4);
             store_16_be(0, ptr+6);
-            plain.length = bodysize-ec;
-            plain.data = (char *)ptr;
+            plain = make_data(ptr, bodysize - ec);
             if (!gss_krb5int_rotate_left(ptr, bodysize-ec, 16))
                 goto no_mem;
             sum.length = ec;
@@ -467,7 +461,7 @@ gss_krb5int_unseal_token_v3(krb5_context *contextptr,
                 goto no_mem;
             memcpy(message_buffer->value, plain.data, message_buffer->length);
         }
-        err = g_order_check(&ctx->seqstate, seqnum);
+        err = g_seqstate_check(ctx->seqstate, seqnum);
         *minor_status = 0;
         return err;
     } else if (toktype == KG_TOK_MIC_MSG) {
@@ -504,7 +498,7 @@ gss_krb5int_unseal_token_v3(krb5_context *contextptr,
             *minor_status = 0;
             return GSS_S_BAD_SIG;
         }
-        err = g_order_check(&ctx->seqstate, seqnum);
+        err = g_seqstate_check(ctx->seqstate, seqnum);
         *minor_status = 0;
         return err;
     } else if (toktype == KG_TOK_DEL_CTX) {

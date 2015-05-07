@@ -220,16 +220,36 @@ create_princ(kadm5_principal_ent_rec *princ, long mask, int n_ks,
         return kadm5_create_principal(handle, princ, mask, pass);
 }
 
-/* Randomize a principal's password using the oldest appropriate kadm5 API. */
-static krb5_error_code
-randkey_princ(krb5_principal princ, krb5_boolean keepold, int n_ks,
-              krb5_key_salt_tuple *ks)
+/* Randomize a principal's password using the appropriate kadm5 API. */
+krb5_error_code
+randkey_princ(void *lhandle, krb5_principal princ, krb5_boolean keepold,
+              int n_ks, krb5_key_salt_tuple *ks, krb5_keyblock **key,
+              int *n_keys)
 {
-    if (keepold || ks) {
-        return kadm5_randkey_principal_3(handle, princ, keepold, n_ks, ks,
-                                         NULL, NULL);
-    } else
-        return kadm5_randkey_principal(handle, princ, NULL, NULL);
+    krb5_error_code ret;
+
+    /* Try the newer API first, because the Solaris kadmind only creates DES
+     * keys when the old API is used. */
+    ret = kadm5_randkey_principal_3(lhandle, princ, keepold, n_ks, ks, key,
+                                    n_keys);
+
+    /* Fall back to the old version if we get an error and aren't using any new
+     * parameters. */
+    if (ret == KADM5_RPC_ERROR && !keepold && ks == NULL)
+        ret = kadm5_randkey_principal(lhandle, princ, key, n_keys);
+
+    return ret;
+}
+
+static krb5_boolean
+policy_exists(const char *name)
+{
+    kadm5_policy_ent_rec pol;
+
+    if (kadm5_get_policy(handle, (char *)name, &pol) != 0)
+        return FALSE;
+    kadm5_free_policy_ent(handle, &pol);
+    return TRUE;
 }
 
 char *
@@ -326,7 +346,7 @@ kadmin_startup(int argc, char *argv[])
             params.mask |= KADM5_CONFIG_MKEY_FROM_KBD;
             break;
         case 'e':
-            retval = krb5_string_to_keysalts(optarg, ", \t", ":.-", 0,
+            retval = krb5_string_to_keysalts(optarg, NULL, NULL, 0,
                                              &params.keysalts,
                                              &params.num_keysalts);
             if (retval) {
@@ -386,18 +406,26 @@ kadmin_startup(int argc, char *argv[])
     }
 
     /*
-     * If no principal name is specified: If a ccache was specified
-     * and its primary principal name can be read, it is used, else if
-     * a keytab was specified, the principal name is host/hostname,
-     * otherwise append "/admin" to the primary name of the default
-     * ccache, $USER, or pw_name.
+     * If no principal name is specified: If authenticating anonymously, use
+     * the anonymouse principal for the local realm, else if a ccache was
+     * specified and its primary principal name can be read, it is used, else
+     * if a keytab was specified, the principal name is host/hostname,
+     * otherwise append "/admin" to the primary name of the default ccache,
+     * $USER, or pw_name.
      *
      * Gee, 100+ lines to figure out the client principal name.  This
      * should be compressed...
      */
 
     if (princstr == NULL) {
-        if (ccache_name != NULL &&
+        if (use_anonymous) {
+            if (asprintf(&princstr, "%s/%s@%s", KRB5_WELLKNOWN_NAMESTR,
+                         KRB5_ANONYMOUS_PRINCSTR, def_realm) < 0) {
+                fprintf(stderr, _("%s: out of memory\n"), whoami);
+                exit(1);
+            }
+            freeprinc++;
+        } else if (ccache_name != NULL &&
             !krb5_cc_get_principal(context, cc, &princ)) {
             retval = krb5_unparse_name(context, princ, &princstr);
             if (retval) {
@@ -769,7 +797,7 @@ kadmin_cpw(int argc, char *argv[])
                 cpw_usage(_("change_password: missing keysaltlist arg"));
                 goto cleanup;
             }
-            retval = krb5_string_to_keysalts(*++argv, ", \t", ":.-", 0,
+            retval = krb5_string_to_keysalts(*++argv, NULL, NULL, 0,
                                              &ks_tuple, &n_ks_tuple);
             if (retval) {
                 com_err("change_password", retval,
@@ -811,7 +839,8 @@ kadmin_cpw(int argc, char *argv[])
         }
         printf(_("Password for \"%s\" changed.\n"), canon);
     } else if (randkey) {
-        retval = randkey_princ(princ, keepold, n_ks_tuple, ks_tuple);
+        retval = randkey_princ(handle, princ, keepold, n_ks_tuple, ks_tuple,
+                               NULL, NULL);
         if (retval) {
             com_err("change_password", retval,
                     _("while randomizing key for \"%s\"."), canon);
@@ -929,8 +958,8 @@ unlock_princ(kadm5_principal_ent_t princ, long *mask, const char *caller)
 static int
 kadmin_parse_princ_args(int argc, char *argv[], kadm5_principal_ent_t oprinc,
                         long *mask, char **pass, krb5_boolean *randkey,
-                        krb5_key_salt_tuple **ks_tuple, int *n_ks_tuple,
-                        char *caller)
+                        krb5_boolean *nokey, krb5_key_salt_tuple **ks_tuple,
+                        int *n_ks_tuple, char *caller)
 {
     int i, attrib_set;
     size_t j;
@@ -944,6 +973,7 @@ kadmin_parse_princ_args(int argc, char *argv[], kadm5_principal_ent_t oprinc,
     *ks_tuple = NULL;
     time(&now);
     *randkey = FALSE;
+    *nokey = FALSE;
     for (i = 1; i < argc - 1; i++) {
         attrib_set = 0;
         if (!strcmp("-x",argv[i])) {
@@ -1037,6 +1067,10 @@ kadmin_parse_princ_args(int argc, char *argv[], kadm5_principal_ent_t oprinc,
             *randkey = TRUE;
             continue;
         }
+        if (!strcmp("-nokey", argv[i])) {
+            *nokey = TRUE;
+            continue;
+        }
         if (!strcmp("-unlock", argv[i])) {
             unlock_princ(oprinc, mask, caller);
             continue;
@@ -1044,7 +1078,7 @@ kadmin_parse_princ_args(int argc, char *argv[], kadm5_principal_ent_t oprinc,
         if (!strcmp("-e", argv[i])) {
             if (++i > argc - 2)
                 return -1;
-            retval = krb5_string_to_keysalts(argv[i], ", \t", ":.-", 0,
+            retval = krb5_string_to_keysalts(argv[i], NULL, NULL, 0,
                                              ks_tuple, n_ks_tuple);
             if (retval) {
                 com_err(caller, retval, _("while parsing keysalts %s"),
@@ -1093,9 +1127,9 @@ kadmin_addprinc_usage()
     fprintf(stderr, _("usage: add_principal [options] principal\n"));
     fprintf(stderr, _("\toptions are:\n"));
     fprintf(stderr,
-            _("\t\t[-x db_princ_args]* [-expire expdate] "
+            _("\t\t[-randkey|-nokey] [-x db_princ_args]* [-expire expdate] "
               "[-pwexpire pwexpdate] [-maxlife maxtixlife]\n"
-              "\t\t[-kvno kvno] [-policy policy] [-clearpolicy] [-randkey]\n"
+              "\t\t[-kvno kvno] [-policy policy] [-clearpolicy]\n"
               "\t\t[-pw password] [-maxrenewlife maxrenewlife]\n"
               "\t\t[-e keysaltlist]\n\t\t[{+|-}attribute]\n")
     );
@@ -1158,9 +1192,8 @@ void
 kadmin_addprinc(int argc, char *argv[])
 {
     kadm5_principal_ent_rec princ;
-    kadm5_policy_ent_rec defpol;
     long mask;
-    krb5_boolean randkey = FALSE, old_style_randkey = FALSE;
+    krb5_boolean randkey = FALSE, nokey = FALSE, old_style_randkey = FALSE;
     int n_ks_tuple;
     krb5_key_salt_tuple *ks_tuple = NULL;
     char *pass, *canon = NULL;
@@ -1173,7 +1206,8 @@ kadmin_addprinc(int argc, char *argv[])
 
     princ.attributes = 0;
     if (kadmin_parse_princ_args(argc, argv, &princ, &mask, &pass, &randkey,
-                                &ks_tuple, &n_ks_tuple, "add_principal")) {
+                                &nokey, &ks_tuple, &n_ks_tuple,
+                                "add_principal")) {
         kadmin_addprinc_usage();
         goto cleanup;
     }
@@ -1184,26 +1218,30 @@ kadmin_addprinc(int argc, char *argv[])
         goto cleanup;
     }
 
-    /*
-     * If -policy was not specified, and -clearpolicy was not
-     * specified, and the policy "default" exists, assign it.  If
-     * -clearpolicy was specified, then KADM5_POLICY_CLR should be
-     * unset, since it is never valid for kadm5_create_principal.
-     */
-    if (!(mask & KADM5_POLICY) && !(mask & KADM5_POLICY_CLR)) {
-        if (!kadm5_get_policy(handle, "default", &defpol)) {
+    if (mask & KADM5_POLICY) {
+        /* Warn if the specified policy does not exist. */
+        if (!policy_exists(princ.policy)) {
+            fprintf(stderr, _("WARNING: policy \"%s\" does not exist\n"),
+                    princ.policy);
+        }
+    } else if (!(mask & KADM5_POLICY_CLR)) {
+        /* If the policy "default" exists, assign it. */
+        if (policy_exists("default")) {
             fprintf(stderr, _("NOTICE: no policy specified for %s; "
                               "assigning \"default\"\n"), canon);
             princ.policy = "default";
             mask |= KADM5_POLICY;
-            kadm5_free_policy_ent(handle, &defpol);
         } else
             fprintf(stderr, _("WARNING: no policy specified for %s; "
                               "defaulting to no policy\n"), canon);
     }
+    /* Don't send KADM5_POLICY_CLR to the server. */
     mask &= ~KADM5_POLICY_CLR;
 
-    if (randkey) {
+    if (nokey) {
+        pass = NULL;
+        mask |= KADM5_KEY_DATA;
+    } else if (randkey) {
         pass = NULL;
     } else if (pass == NULL) {
         unsigned int sz = sizeof(newpw) - 1;
@@ -1234,13 +1272,19 @@ kadmin_addprinc(int argc, char *argv[])
         retval = create_princ(&princ, mask, n_ks_tuple, ks_tuple, pass);
         old_style_randkey = 1;
     }
+    if (retval == KADM5_BAD_MASK && nokey) {
+        fprintf(stderr, _("Admin server does not support -nokey while "
+                          "creating \"%s\"\n"), canon);
+        goto cleanup;
+    }
     if (retval) {
         com_err("add_principal", retval, "while creating \"%s\".", canon);
         goto cleanup;
     }
     if (old_style_randkey) {
         /* Randomize the password and re-enable tickets. */
-        retval = randkey_princ(princ.principal, FALSE, n_ks_tuple, ks_tuple);
+        retval = randkey_princ(handle, princ.principal, FALSE, n_ks_tuple,
+                               ks_tuple, NULL, NULL);
         if (retval) {
             com_err("add_principal", retval,
                     _("while randomizing key for \"%s\"."), canon);
@@ -1272,7 +1316,7 @@ kadmin_modprinc(int argc, char *argv[])
     long mask;
     krb5_error_code retval;
     char *pass, *canon = NULL;
-    krb5_boolean randkey = FALSE;
+    krb5_boolean randkey = FALSE, nokey = FALSE;
     int n_ks_tuple = 0;
     krb5_key_salt_tuple *ks_tuple = NULL;
 
@@ -1305,12 +1349,19 @@ kadmin_modprinc(int argc, char *argv[])
     kadm5_free_principal_ent(handle, &oldprinc);
     retval = kadmin_parse_princ_args(argc, argv,
                                      &princ, &mask,
-                                     &pass, &randkey,
+                                     &pass, &randkey, &nokey,
                                      &ks_tuple, &n_ks_tuple,
                                      "modify_principal");
-    if (retval || ks_tuple != NULL || randkey || pass) {
+    if (retval || ks_tuple != NULL || randkey || nokey || pass) {
         kadmin_modprinc_usage();
         goto cleanup;
+    }
+    if (mask & KADM5_POLICY) {
+        /* Warn if the specified policy does not exist. */
+        if (!policy_exists(princ.policy)) {
+            fprintf(stderr, _("WARNING: policy \"%s\" does not exist\n"),
+                    princ.policy);
+        }
     }
     if (mask) {
         /* Skip this if all we're doing is setting certhash. */
@@ -1336,6 +1387,7 @@ kadmin_getprinc(int argc, char *argv[])
     kadm5_principal_ent_rec dprinc;
     krb5_principal princ = NULL;
     krb5_error_code retval;
+    const char *polname, *noexist;
     char *canon = NULL, *princstr = NULL, *modprincstr = NULL;
     int i;
     size_t j;
@@ -1404,15 +1456,16 @@ kadmin_getprinc(int argc, char *argv[])
                                      enctype, sizeof(enctype)))
                 snprintf(enctype, sizeof(enctype), _("<Encryption type 0x%x>"),
                          key_data->key_data_type[0]);
-            printf("Key: vno %d, %s, ", key_data->key_data_kvno, enctype);
-            if (key_data->key_data_ver > 1) {
+            printf("Key: vno %d, %s", key_data->key_data_kvno, enctype);
+            if (key_data->key_data_ver > 1 &&
+                key_data->key_data_type[1] != KRB5_KDB_SALTTYPE_NORMAL) {
                 if (krb5_salttype_to_string(key_data->key_data_type[1],
                                             salttype, sizeof(salttype)))
                     snprintf(salttype, sizeof(salttype), _("<Salt type 0x%x>"),
                              key_data->key_data_type[1]);
-                printf("%s\n", salttype);
-            } else
-                printf(_("no salt\n"));
+                printf(":%s", salttype);
+            }
+            printf("\n");
         }
         printf(_("MKey: vno %d\n"), dprinc.mkvno);
 
@@ -1422,7 +1475,10 @@ kadmin_getprinc(int argc, char *argv[])
                 printf(" %s", prflags[j]);
         }
         printf("\n");
-        printf(_("Policy: %s\n"), dprinc.policy ? dprinc.policy : _("[none]"));
+        polname = (dprinc.policy != NULL) ? dprinc.policy : _("[none]");
+        noexist = (dprinc.policy != NULL && !policy_exists(dprinc.policy)) ?
+            _(" [does not exist]") : "";
+        printf(_("Policy: %s%s\n"), polname, noexist);
     } else {
         printf("\"%s\"\t%d\t%d\t%d\t%d\t\"%s\"\t%d\t%d\t%d\t%d\t\"%s\""
                "\t%d\t%d\t%d\t%d\t%d",
@@ -1572,7 +1628,7 @@ kadmin_parse_policy_args(int argc, char *argv[], kadm5_policy_ent_t policy,
             if (++i > argc - 2)
                 return -1;
             if (strcmp(argv[i], "-")) {
-                retval = krb5_string_to_keysalts(argv[i], ",", ":.-", 0,
+                retval = krb5_string_to_keysalts(argv[i], ",", NULL, 0,
                                                  &ks_tuple, &n_ks_tuple);
                 if (retval) {
                     com_err(caller, retval, _("while parsing keysalts %s"),
@@ -1699,7 +1755,6 @@ kadmin_getpol(int argc, char *argv[])
         printf(_("Minimum number of password character classes: %ld\n"),
                policy.pw_min_classes);
         printf(_("Number of old keys kept: %ld\n"), policy.pw_history_num);
-        printf(_("Reference count: %ld\n"), policy.policy_refcnt);
         printf(_("Maximum password failures before lockout: %lu\n"),
                (unsigned long)policy.pw_max_fail);
         printf(_("Password failure count reset interval: %s\n"),
@@ -1709,11 +1764,11 @@ kadmin_getpol(int argc, char *argv[])
         if (policy.allowed_keysalts != NULL)
             printf(_("Allowed key/salt types: %s\n"), policy.allowed_keysalts);
     } else {
-        printf("\"%s\"\t%ld\t%ld\t%ld\t%ld\t%ld\t%ld\t%lu\t%ld\t%ld\t%s\n",
+        /* Output 0 where we used to output policy_refcnt. */
+        printf("\"%s\"\t%ld\t%ld\t%ld\t%ld\t%ld\t0\t%lu\t%ld\t%ld\t%s\n",
                policy.policy, policy.pw_max_life, policy.pw_min_life,
                policy.pw_min_length, policy.pw_min_classes,
-               policy.pw_history_num, policy.policy_refcnt,
-               (unsigned long)policy.pw_max_fail,
+               policy.pw_history_num, (unsigned long)policy.pw_max_fail,
                (long)policy.pw_failcnt_interval,
                (long)policy.pw_lockout_duration,
                (policy.allowed_keysalts == NULL) ? "-" :
@@ -1780,13 +1835,15 @@ kadmin_purgekeys(int argc, char *argv[])
     if (argc == 4 && strcmp(argv[1], "-keepkvno") == 0) {
         keepkvno = atoi(argv[2]);
         pname = argv[3];
-    }
-    if (argc == 2) {
+    } else if (argc == 3 && strcmp(argv[1], "-all") == 0) {
+        keepkvno = KRB5_INT32_MAX;
+        pname = argv[2];
+    } else if (argc == 2) {
         pname = argv[1];
     }
     if (pname == NULL) {
-        fprintf(stderr, _("usage: purgekeys [-keepkvno oldest_kvno_to_keep] "
-                          "principal\n"));
+        fprintf(stderr, _("usage: purgekeys "
+                          "[-all|-keepkvno oldest_kvno_to_keep] principal\n"));
         return;
     }
 
@@ -1809,7 +1866,10 @@ kadmin_purgekeys(int argc, char *argv[])
         goto cleanup;
     }
 
-    printf(_("Old keys for principal \"%s\" purged.\n"), canon);
+    if (keepkvno == KRB5_INT32_MAX)
+        printf(_("All keys for principal \"%s\" removed.\n"), canon);
+    else
+        printf(_("Old keys for principal \"%s\" purged.\n"), canon);
 cleanup:
     krb5_free_principal(context, princ);
     free(canon);

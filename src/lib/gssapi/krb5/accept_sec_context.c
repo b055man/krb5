@@ -360,10 +360,10 @@ kg_accept_dce(minor_status, context_handle, verifier_cred_handle,
     if (time_rec)
         *time_rec = ctx->krb_times.endtime - now;
 
+    /* Never return GSS_C_DELEG_FLAG since we don't support DCE credential
+     * delegation yet. */
     if (ret_flags)
-        *ret_flags = ctx->gss_flags;
-
-    /* XXX no support for delegated credentials yet */
+        *ret_flags = (ctx->gss_flags & ~GSS_C_DELEG_FLAG);
 
     *minor_status = 0;
 
@@ -441,7 +441,6 @@ kg_accept_krb5(minor_status, context_handle,
     char *sptr;
     OM_uint32 tmp;
     size_t md5len;
-    int bigend;
     krb5_gss_cred_id_t cred = 0;
     krb5_data ap_rep, ap_req;
     unsigned int i;
@@ -451,7 +450,6 @@ kg_accept_krb5(minor_status, context_handle,
     krb5_checksum reqcksum;
     krb5_gss_name_t name = NULL;
     krb5_ui_4 gss_flags = 0;
-    int decode_req_message = 0;
     krb5_gss_ctx_id_rec *ctx = NULL;
     krb5_timestamp now;
     gss_buffer_desc token;
@@ -464,15 +462,17 @@ kg_accept_krb5(minor_status, context_handle,
     OM_uint32 tmp_minor_status;
     krb5_error krb_error_data;
     krb5_data scratch;
-    gss_cred_id_t cred_handle = NULL;
+    gss_cred_id_t defcred = GSS_C_NO_CREDENTIAL;
     krb5_gss_cred_id_t deleg_cred = NULL;
     krb5int_access kaccess;
     int cred_rcache = 0;
     int no_encap = 0;
+    int token_deleg_flag = 0;
     krb5_flags ap_req_options = 0;
     krb5_enctype negotiated_etype;
     krb5_authdata_context ad_context = NULL;
     krb5_principal accprinc = NULL;
+    krb5_ap_req *request = NULL;
 
     code = krb5int_accessor (&kaccess, KRB5INT_ACCESS_VERSION);
     if (code) {
@@ -507,23 +507,23 @@ kg_accept_krb5(minor_status, context_handle,
     if (verifier_cred_handle == GSS_C_NO_CREDENTIAL) {
         major_status = krb5_gss_acquire_cred(minor_status, GSS_C_NO_NAME,
                                              GSS_C_INDEFINITE, GSS_C_NO_OID_SET,
-                                             GSS_C_ACCEPT, &cred_handle,
+                                             GSS_C_ACCEPT, &defcred,
                                              NULL, NULL);
         if (major_status != GSS_S_COMPLETE) {
             code = *minor_status;
             goto fail;
         }
-    } else {
-        major_status = krb5_gss_validate_cred(minor_status,
-                                              verifier_cred_handle);
-        if (GSS_ERROR(major_status)) {
-            code = *minor_status;
-            goto fail;
-        }
-        cred_handle = verifier_cred_handle;
+        verifier_cred_handle = defcred;
     }
 
-    cred = (krb5_gss_cred_id_t) cred_handle;
+    /* Resolve any initiator state in the verifier cred and lock it. */
+    major_status = kg_cred_resolve(minor_status, context, verifier_cred_handle,
+                                   GSS_C_NO_NAME);
+    if (GSS_ERROR(major_status)) {
+        code = *minor_status;
+        goto fail;
+    }
+    cred = (krb5_gss_cred_id_t)verifier_cred_handle;
 
     /* make sure the supplied credentials are valid for accept */
 
@@ -587,7 +587,6 @@ kg_accept_krb5(minor_status, context_handle,
 
     sptr = (char *) ptr;
     TREAD_STR(sptr, ap_req.data, ap_req.length);
-    decode_req_message = 1;
 
     /* construct the sender_addr */
 
@@ -604,6 +603,12 @@ kg_accept_krb5(minor_status, context_handle,
     }
 
     /* decode the AP_REQ message */
+    code = decode_krb5_ap_req(&ap_req, &request);
+    if (code) {
+        major_status = GSS_S_FAILURE;
+        goto done;
+    }
+    ticket = request->ticket;
 
     /* decode the message */
 
@@ -626,8 +631,8 @@ kg_accept_krb5(minor_status, context_handle,
 
     /* Limit the encryption types negotiated (if requested). */
     if (cred->req_enctypes) {
-        if ((code = krb5_set_default_tgs_enctypes(context,
-                                                  cred->req_enctypes))) {
+        if ((code = krb5_auth_con_setpermetypes(context, auth_context,
+                                                cred->req_enctypes))) {
             major_status = GSS_S_FAILURE;
             goto fail;
         }
@@ -640,8 +645,9 @@ kg_accept_krb5(minor_status, context_handle,
         }
     }
 
-    code = krb5_rd_req(context, &auth_context, &ap_req, accprinc,
-                       cred->keytab, &ap_req_options, &ticket);
+    code = krb5_rd_req_decoded(context, &auth_context, request, accprinc,
+                               cred->keytab, &ap_req_options, NULL);
+
     krb5_free_principal(context, accprinc);
     if (code) {
         major_status = GSS_S_FAILURE;
@@ -698,8 +704,6 @@ kg_accept_krb5(minor_status, context_handle,
         }
 
         gss_flags = GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG | GSS_C_SEQUENCE_FLAG;
-        bigend = 0;
-        decode_req_message = 0;
     } else {
         /* gss krb5 v1 */
 
@@ -773,24 +777,22 @@ kg_accept_krb5(minor_status, context_handle,
         xfree(reqcksum.contents);
         reqcksum.contents = 0;
 
+        /* Read the token flags.  Remember if GSS_C_DELEG_FLAG was set, but
+         * mask it out until we actually read a delegated credential. */
         TREAD_INT(ptr, gss_flags, 0);
-#if 0
-        gss_flags &= ~GSS_C_DELEG_FLAG; /* mask out the delegation flag; if
-                                           there's a delegation, we'll set
-                                           it below */
-#endif
-        decode_req_message = 0;
+        token_deleg_flag = (gss_flags & GSS_C_DELEG_FLAG);
+        gss_flags &= ~GSS_C_DELEG_FLAG;
 
         /* if the checksum length > 24, there are options to process */
 
         i = authdat->checksum->length - 24;
-        if (i && (gss_flags & GSS_C_DELEG_FLAG)) {
+        if (i && token_deleg_flag) {
             if (i >= 4) {
                 TREAD_INT16(ptr, option_id, 0);
                 TREAD_INT16(ptr, option.length, 0);
                 i -= 4;
 
-                if (i < option.length || option.length < 0) {
+                if (i < option.length) {
                     code = KG_BAD_LENGTH;
                     major_status = GSS_S_FAILURE;
                     goto fail;
@@ -819,6 +821,7 @@ kg_accept_krb5(minor_status, context_handle,
                     goto fail;
                 }
 
+                gss_flags |= GSS_C_DELEG_FLAG;
             } /* if i >= 4 */
             /* ignore any additional trailing data, for now */
         }
@@ -967,8 +970,6 @@ kg_accept_krb5(minor_status, context_handle,
         ctx->gss_flags |= GSS_C_DELEG_FLAG;
     }
 
-    krb5_free_ticket(context, ticket); /* Done with ticket */
-
     {
         krb5_int32 seq_temp;
         krb5_auth_con_getremoteseqnumber(context, auth_context, &seq_temp);
@@ -986,9 +987,14 @@ kg_accept_krb5(minor_status, context_handle,
         goto fail;
     }
 
-    g_order_init(&(ctx->seqstate), ctx->seq_recv,
-                 (ctx->gss_flags & GSS_C_REPLAY_FLAG) != 0,
-                 (ctx->gss_flags & GSS_C_SEQUENCE_FLAG) != 0, ctx->proto);
+    code = g_seqstate_init(&ctx->seqstate, ctx->seq_recv,
+                           (ctx->gss_flags & GSS_C_REPLAY_FLAG) != 0,
+                           (ctx->gss_flags & GSS_C_SEQUENCE_FLAG) != 0,
+                           ctx->proto);
+    if (code) {
+        major_status = GSS_S_FAILURE;
+        goto fail;
+    }
 
     /* DCE_STYLE implies mutual authentication */
     if (ctx->gss_flags & GSS_C_DCE_STYLE)
@@ -1205,26 +1211,12 @@ fail:
 
     *minor_status = code;
 
-    /*
-     * If decode_req_message is set, then we need to decode the ap_req
-     * message to determine whether or not to send a response token.
-     * We need to do this because for some errors we won't be able to
-     * decode the authenticator to read out the gss_flags field.
-     */
-    if (decode_req_message) {
-        krb5_ap_req      * request;
-
-        if (decode_krb5_ap_req(&ap_req, &request))
-            goto done;
-
-        if (request->ap_options & AP_OPTS_MUTUAL_REQUIRED)
-            gss_flags |= GSS_C_MUTUAL_FLAG;
-        krb5_free_ap_req(context, request);
-    }
-
-    if (cred
-        && ((gss_flags & GSS_C_MUTUAL_FLAG)
-            || (major_status == GSS_S_CONTINUE_NEEDED))) {
+    /* We may have failed before being able to read the GSS flags from the
+     * authenticator, so also check the request AP options. */
+    if (cred != NULL && request != NULL &&
+        ((gss_flags & GSS_C_MUTUAL_FLAG) ||
+         (request->ap_options & AP_OPTS_MUTUAL_REQUIRED) ||
+         major_status == GSS_S_CONTINUE_NEEDED)) {
         unsigned int tmsglen;
         int toktype;
 
@@ -1235,13 +1227,14 @@ fail:
         memset(&krb_error_data, 0, sizeof(krb_error_data));
 
         code -= ERROR_TABLE_BASE_krb5;
-        if (code < 0 || code > 128)
+        if (code < 0 || code > KRB_ERR_MAX)
             code = 60 /* KRB_ERR_GENERIC */;
 
         krb_error_data.error = code;
         (void) krb5_us_timeofday(context, &krb_error_data.stime,
                                  &krb_error_data.susec);
 
+        krb_error_data.server = ticket->server;
         code = krb5_mk_error(context, &krb_error_data, &scratch);
         if (code)
             goto done;
@@ -1250,7 +1243,7 @@ fail:
         toktype = KG_TOK_CTX_ERROR;
 
         token.length = g_token_size(mech_used, tmsglen);
-        token.value = (unsigned char *) xmalloc(token.length);
+        token.value = gssalloc_malloc(token.length);
         if (!token.value)
             goto done;
 
@@ -1264,9 +1257,11 @@ fail:
     }
 
 done:
-    if (!verifier_cred_handle && cred_handle) {
-        krb5_gss_release_cred(&tmp_minor_status, &cred_handle);
-    }
+    krb5_free_ap_req(context, request);
+    if (cred)
+        k5_mutex_unlock(&cred->lock);
+    if (defcred)
+        krb5_gss_release_cred(&tmp_minor_status, &defcred);
     if (context) {
         if (major_status && *minor_status)
             save_error_info(*minor_status, context);

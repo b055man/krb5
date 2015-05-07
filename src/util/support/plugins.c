@@ -24,11 +24,11 @@
  * or implied warranty.
  */
 
+#include "k5-platform.h"
 #include "k5-plugin.h"
 #if USE_DLOPEN
 #include <dlfcn.h>
 #endif
-#include <stdio.h>
 #include <sys/types.h>
 #ifdef HAVE_SYS_STAT_H
 #include <sys/stat.h>
@@ -36,14 +36,23 @@
 #ifdef HAVE_SYS_PARAM_H
 #include <sys/param.h>
 #endif
-#include <errno.h>
-#include <stdlib.h>
-#include <string.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
 
-#include "k5-platform.h"
+#if USE_DLOPEN
+#ifdef RTLD_GROUP
+#define GROUP RTLD_GROUP
+#else
+#define GROUP 0
+#endif
+#ifdef RTLD_NODELETE
+#define NODELETE RTLD_NODELETE
+#else
+#define NODELETE 0
+#endif
+#define PLUGIN_DLOPEN_FLAGS (RTLD_NOW | RTLD_LOCAL | GROUP | NODELETE)
+#endif
 
 #if USE_DLOPEN && USE_CFBUNDLE
 #include <CoreFoundation/CoreFoundation.h>
@@ -155,8 +164,8 @@ int closedir(DIR *dp)
 {
     if (!dp) return 0;
     _findclose(dp->handle);
-    if (dp->dir) free(dp->dir);
-    if (dp) free(dp);
+    free(dp->dir);
+    free(dp);
 
     return 0;
 }
@@ -174,8 +183,8 @@ krb5int_open_plugin (const char *filepath, struct plugin_file_handle **h, struct
         if (stat (filepath, &statbuf) < 0) {
             err = errno;
             Tprintf ("stat(%s): %s\n", filepath, strerror (err));
-            krb5int_set_error(ep, err, _("unable to find plugin [%s]: %s"),
-                              filepath, strerror(err));
+            k5_set_error(ep, err, _("unable to find plugin [%s]: %s"),
+                         filepath, strerror(err));
         }
     }
 
@@ -257,11 +266,6 @@ krb5int_open_plugin (const char *filepath, struct plugin_file_handle **h, struct
         }
 #endif /* USE_CFBUNDLE */
 
-#ifdef RTLD_GROUP
-#define PLUGIN_DLOPEN_FLAGS (RTLD_NOW | RTLD_LOCAL | RTLD_GROUP)
-#else
-#define PLUGIN_DLOPEN_FLAGS (RTLD_NOW | RTLD_LOCAL)
-#endif
         if (!err) {
             handle = dlopen(filepath, PLUGIN_DLOPEN_FLAGS);
             if (handle == NULL) {
@@ -270,8 +274,8 @@ krb5int_open_plugin (const char *filepath, struct plugin_file_handle **h, struct
                     e = _("unknown failure");
                 Tprintf ("dlopen(%s): %s\n", filepath, e);
                 err = ENOENT; /* XXX */
-                krb5int_set_error(ep, err, _("unable to load plugin [%s]: %s"),
-                                  filepath, e);
+                k5_set_error(ep, err, _("unable to load plugin [%s]: %s"),
+                             filepath, e);
             }
         }
 
@@ -293,7 +297,7 @@ krb5int_open_plugin (const char *filepath, struct plugin_file_handle **h, struct
         if (handle == NULL) {
             Tprintf ("Unable to load dll: %s\n", filepath);
             err = ENOENT; /* XXX */
-            krb5int_set_error(ep, err, _("unable to load DLL [%s]"), filepath);
+            k5_set_error(ep, err, _("unable to load DLL [%s]"), filepath);
         }
 
         if (!err) {
@@ -309,7 +313,7 @@ krb5int_open_plugin (const char *filepath, struct plugin_file_handle **h, struct
 
     if (!err && !got_plugin) {
         err = ENOENT;  /* no plugin or no way to load plugins */
-        krb5int_set_error(ep, err, _("plugin unavailable: %s"), strerror(err));
+        k5_set_error(ep, err, _("plugin unavailable: %s"), strerror(err));
     }
 
     if (!err) {
@@ -317,7 +321,7 @@ krb5int_open_plugin (const char *filepath, struct plugin_file_handle **h, struct
         htmp = NULL;  /* h takes ownership */
     }
 
-    if (htmp != NULL) { free (htmp); }
+    free(htmp);
 
     return err;
 }
@@ -341,7 +345,7 @@ krb5int_get_plugin_sym (struct plugin_file_handle *h,
                 e = "unknown failure";
             Tprintf ("dlsym(%s): %s\n", csymname, e);
             err = ENOENT; /* XXX */
-            krb5int_set_error(ep, err, "%s", e);
+            k5_set_error(ep, err, "%s", e);
         }
     }
 #endif
@@ -356,7 +360,7 @@ krb5int_get_plugin_sym (struct plugin_file_handle *h,
             const char *e = "unable to get dll symbol"; /* XXX copy and save away */
             Tprintf ("GetProcAddress(%s): %i\n", csymname, GetLastError());
             err = ENOENT; /* XXX */
-            krb5int_set_error(ep, err, "%s", e);
+            k5_set_error(ep, err, "%s", e);
 
             dw = GetLastError();
             if (FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
@@ -435,15 +439,6 @@ krb5int_close_plugin (struct plugin_file_handle *h)
 #elif HAVE_NDIR_H
 # include <ndir.h>
 #endif
-#endif
-
-
-#ifdef HAVE_STRERROR_R
-#define ERRSTR(ERR, BUF)                                                \
-    (strerror_r (ERR, BUF, sizeof(BUF)) == 0 ? BUF : strerror (ERR))
-#else
-#define ERRSTR(ERR, BUF)                        \
-    (strerror (ERR))
 #endif
 
 static long
@@ -551,7 +546,7 @@ krb5int_get_plugin_filenames (const char * const *filebases, char ***filenames)
         tempnames = NULL;
     }
 
-    if (tempnames) { krb5int_free_plugin_filenames (tempnames); }
+    krb5int_free_plugin_filenames(tempnames);
 
     return err;
 }
@@ -602,7 +597,7 @@ krb5int_open_plugin_dirs (const char * const *dirnames,
                     if (!err) { handle = NULL; }  /* h takes ownership */
                 }
 
-                if (filepath != NULL) { free (filepath); }
+                free(filepath);
                 if (handle   != NULL) { krb5int_close_plugin (handle); }
             }
         } else {
@@ -637,7 +632,7 @@ krb5int_open_plugin_dirs (const char * const *dirnames,
                     }
                 }
 
-                if (filepath  != NULL) { free (filepath); }
+                free(filepath);
                 if (handle    != NULL) { krb5int_close_plugin (handle); }
             }
 
@@ -727,7 +722,7 @@ krb5int_get_plugin_dir_data (struct plugin_dir_handle *dirhandle,
         p = NULL; /* ptrs takes ownership */
     }
 
-    if (p != NULL) { free (p); }
+    free(p);
 
     return err;
 }
@@ -786,7 +781,7 @@ krb5int_get_plugin_dir_func (struct plugin_dir_handle *dirhandle,
         p = NULL; /* ptrs takes ownership */
     }
 
-    if (p != NULL) { free (p); }
+    free(p);
 
     return err;
 }

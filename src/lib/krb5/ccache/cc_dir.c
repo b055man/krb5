@@ -118,16 +118,15 @@ split_path(krb5_context context, const char *path, char **dirname_out,
 
     if (*dirname == '\0') {
         ret = KRB5_CC_BADNAME;
-        krb5_set_error_message(context, ret,
-                               _("Subsidiary cache path %s has no parent "
-                                 "directory"), path);
+        k5_setmsg(context, ret,
+                  _("Subsidiary cache path %s has no parent directory"), path);
         goto error;
     }
     if (!filename_is_cache(filename)) {
         ret = KRB5_CC_BADNAME;
-        krb5_set_error_message(context, ret,
-                               _("Subsidiary cache path %s filename does not "
-                                 "begin with \"tkt\""), path);
+        k5_setmsg(context, ret,
+                  _("Subsidiary cache path %s filename does not begin with "
+                    "\"tkt\""), path);
         goto error;
     }
 
@@ -167,9 +166,8 @@ read_primary_file(krb5_context context, const char *primary_path,
      * filename, or isn't a single-component filename. */
     if (buf[len - 1] != '\n' || !filename_is_cache(buf) ||
         strchr(buf, '/') || strchr(buf, '\\')) {
-        krb5_set_error_message(context, KRB5_CC_FORMAT,
-                               _("%s contains invalid filename"),
-                               primary_path);
+        k5_setmsg(context, KRB5_CC_FORMAT, _("%s contains invalid filename"),
+                  primary_path);
         return KRB5_CC_FORMAT;
     }
     buf[len - 1] = '\0';
@@ -227,15 +225,15 @@ verify_dir(krb5_context context, const char *dirname)
     if (stat(dirname, &st) < 0) {
         if (errno == ENOENT && mkdir(dirname, S_IRWXU) == 0)
             return 0;
-        krb5_set_error_message(context, KRB5_FCC_NOFILE,
-                               _("Credential cache directory %s does not "
-                                 "exist"), dirname);
+        k5_setmsg(context, KRB5_FCC_NOFILE,
+                  _("Credential cache directory %s does not exist"),
+                  dirname);
         return KRB5_FCC_NOFILE;
     }
     if (!S_ISDIR(st.st_mode)) {
-        krb5_set_error_message(context, KRB5_CC_FORMAT,
-                               _("Credential cache directory %s exists but is"
-                                 "not a directory"), dirname);
+        k5_setmsg(context, KRB5_CC_FORMAT,
+                  _("Credential cache directory %s exists but is not a "
+                    "directory"), dirname);
         return KRB5_CC_FORMAT;
     }
     return 0;
@@ -263,6 +261,28 @@ get_context_default_dir(krb5_context context, char **dirname_out)
     if (dirname == NULL)
         return ENOMEM;
     *dirname_out = dirname;
+    return 0;
+}
+
+/*
+ * If the default ccache name for context is a subsidiary file in a directory
+ * collection, set *subsidiary_out to the residual value.  Otherwise set
+ * *subsidiary_out to NULL.
+ */
+static krb5_error_code
+get_context_subsidiary_file(krb5_context context, char **subsidiary_out)
+{
+    const char *defname;
+    char *residual;
+
+    *subsidiary_out = NULL;
+    defname = krb5_cc_default_name(context);
+    if (defname == NULL || strncmp(defname, "DIR::", 5) != 0)
+        return 0;
+    residual = strdup(defname + 4);
+    if (residual == NULL)
+        return ENOMEM;
+    *subsidiary_out = residual;
     return 0;
 }
 
@@ -376,12 +396,14 @@ dcc_gen_new(krb5_context context, krb5_ccache *cache_out)
     if (ret)
         return ret;
     if (dirname == NULL) {
-        krb5_set_error_message(context, KRB5_DCC_CANNOT_CREATE,
-                               _("Can't create new subsidiary cache because "
-                                 "default cache is not a directory "
-                                 "collection"));
+        k5_setmsg(context, KRB5_DCC_CANNOT_CREATE,
+                  _("Can't create new subsidiary cache because default cache "
+                    "is not a directory collection"));
         return KRB5_DCC_CANNOT_CREATE;
     }
+    ret = verify_dir(context, dirname);
+    if (ret)
+        goto cleanup;
     ret = k5_path_join(dirname, "tktXXXXXX", &template);
     if (ret)
         goto cleanup;
@@ -435,6 +457,7 @@ dcc_close(krb5_context context, krb5_ccache cache)
     ret = krb5_fcc_ops.close(context, data->fcc);
     free(data->residual);
     free(data);
+    free(cache);
     return ret;
 }
 
@@ -561,6 +584,18 @@ dcc_ptcursor_new(krb5_context context, krb5_cc_ptcursor *cursor_out)
 
     *cursor_out = NULL;
 
+    /* If the default cache is a subsidiary file, make a cursor with the
+     * specified file as the primary but with no directory collection. */
+    ret = get_context_subsidiary_file(context, &primary);
+    if (ret)
+        goto cleanup;
+    if (primary != NULL) {
+        ret = make_cursor(NULL, primary, NULL, cursor_out);
+        if (ret)
+            free(primary);
+        return ret;
+    }
+
     /* Open the directory for the context's default cache. */
     ret = get_context_default_dir(context, &dirname);
     if (ret || dirname == NULL)
@@ -606,15 +641,16 @@ dcc_ptcursor_next(krb5_context context, krb5_cc_ptcursor cursor,
     struct stat sb;
 
     *cache_out = NULL;
-    if (data->dir == NULL)      /* Empty cursor */
-        return 0;
 
-    /* Return the primary cache if we haven't yet. */
+    /* Return the primary or specified subsidiary cache if we haven't yet. */
     if (data->first) {
         data->first = FALSE;
         if (data->primary != NULL && stat(data->primary + 1, &sb) == 0)
             return dcc_resolve(context, cache_out, data->primary);
     }
+
+    if (data->dir == NULL)      /* No directory collection */
+        return 0;
 
     /* Look for the next filename of the correct form, without repeating the
      * primary cache. */
@@ -634,7 +670,7 @@ dcc_ptcursor_next(krb5_context context, krb5_cc_ptcursor cursor,
     }
 
     /* We exhausted the directory without finding a cache to yield. */
-    free(data->dir);
+    closedir(data->dir);
     data->dir = NULL;
     return 0;
 }

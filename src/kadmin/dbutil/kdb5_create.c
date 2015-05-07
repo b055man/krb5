@@ -53,7 +53,6 @@
  * Use is subject to license terms.
  */
 
-#include <stdio.h>
 #include <k5-int.h>
 #include <kdb.h>
 #include <kadm5/server_internal.h>
@@ -264,8 +263,7 @@ void kdb5_create(argc, argv)
 
     rblock.key = &master_keyblock;
 
-    seed.length = master_keyblock.length;
-    seed.data = master_keyblock.contents;
+    seed = make_data(master_keyblock.contents, master_keyblock.length);
 
     if ((retval = krb5_c_random_seed(util_context, &seed))) {
         com_err(progname, retval,
@@ -289,9 +287,9 @@ void kdb5_create(argc, argv)
 /*     } */
 
     if (log_ctx && log_ctx->iproprole) {
-        if ((retval = ulog_map(util_context, global_params.iprop_logfile,
-                               global_params.iprop_ulogsize, FKCOMMAND,
-                               db5util_db_args))) {
+        retval = ulog_map(util_context, global_params.iprop_logfile,
+                          global_params.iprop_ulogsize);
+        if (retval) {
             com_err(argv[0], retval, _("while creating update log"));
             exit_status++;
             return;
@@ -301,12 +299,12 @@ void kdb5_create(argc, argv)
          * We're reinitializing the update log in case one already
          * existed, but this should never happen.
          */
-        (void) memset(log_ctx->ulog, 0, sizeof (kdb_hlog_t));
-
-        log_ctx->ulog->kdb_hmagic = KDB_ULOG_HDR_MAGIC;
-        log_ctx->ulog->db_version_num = KDB_VERSION;
-        log_ctx->ulog->kdb_state = KDB_STABLE;
-        log_ctx->ulog->kdb_block = ULOG_BLOCK;
+        retval = ulog_init_header(util_context);
+        if (retval) {
+            com_err(argv[0], retval, _("while initializing update log"));
+            exit_status++;
+            return;
+        }
 
         /*
          * Since we're creating a new db we shouldn't worry about
@@ -347,7 +345,7 @@ void kdb5_create(argc, argv)
                                       &master_keyblock,
                                       mkey_password);
     if (retval) {
-        com_err(progname, errno, _("while storing key"));
+        com_err(progname, retval, _("while storing key"));
         printf(_("Warning: couldn't stash master key.\n"));
     }
     /* clean up */

@@ -41,18 +41,15 @@ static char sccsid[] = "@(#)svc_udp.c 1.24 87/08/11 Copyr 1984 Sun Micro";
  * achieving execute-at-most-once semantics.)
  */
 
-#include <stdio.h>
-#include <string.h>
+#include "k5-platform.h"
 #include <unistd.h>
 #include <gssrpc/rpc.h>
 #include <sys/socket.h>
-#include <errno.h>
-#include "autoconf.h"
 #ifdef HAVE_SYS_UIO_H
 #include <sys/uio.h>
 #endif
 #include <port-sockets.h>
-#include "k5-platform.h"
+#include <socket-utils.h>
 
 
 #ifndef GETSOCKNAME_ARG3_TYPE
@@ -118,8 +115,9 @@ svcudp_bufcreate(
 	bool_t madesock = FALSE;
 	register SVCXPRT *xprt;
 	register struct svcudp_data *su;
-	struct sockaddr_in addr;
-	GETSOCKNAME_ARG3_TYPE len = sizeof(struct sockaddr_in);
+	struct sockaddr_storage ss;
+	struct sockaddr *sa = (struct sockaddr *)&ss;
+	socklen_t len;
 
 	if (sock == RPC_ANYSOCK) {
 		if ((sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
@@ -128,17 +126,22 @@ svcudp_bufcreate(
 		}
 		set_cloexec_fd(sock);
 		madesock = TRUE;
+		memset(&ss, 0, sizeof(ss));
+		sa->sa_family = AF_INET;
+	} else {
+		len = sizeof(struct sockaddr_storage);
+		if (getsockname(sock, sa, &len) < 0) {
+			perror("svcudp_create - cannot getsockname");
+			return ((SVCXPRT *)NULL);
+		}
 	}
-	memset(&addr, 0, sizeof (addr));
-#if HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
-	addr.sin_len = sizeof(addr);
-#endif
-	addr.sin_family = AF_INET;
-	if (bindresvport(sock, &addr)) {
-		addr.sin_port = 0;
-		(void)bind(sock, (struct sockaddr *)&addr, len);
+
+	if (bindresvport_sa(sock, sa)) {
+		sa_setport(sa, 0);
+		(void)bind(sock, sa, sa_socklen(sa));
 	}
-	if (getsockname(sock, (struct sockaddr *)&addr, &len) != 0) {
+	len = sizeof(struct sockaddr_storage);
+	if (getsockname(sock, sa, &len) != 0) {
 		perror("svcudp_create - cannot getsockname");
 		if (madesock)
 			(void)close(sock);
@@ -166,7 +169,7 @@ svcudp_bufcreate(
 	xprt->xp_auth = NULL;
 	xprt->xp_verf.oa_base = su->su_verfbody;
 	xprt->xp_ops = &svcudp_op;
-	xprt->xp_port = ntohs(addr.sin_port);
+	xprt->xp_port = sa_getport(sa);
 	xprt->xp_sock = sock;
 	xprt_register(xprt);
 	return (xprt);
@@ -198,6 +201,7 @@ svcudp_recv(
 	register int rlen;
 	char *reply;
 	uint32_t replylen;
+	socklen_t addrlen;
 
     again:
 	memset(&dummy, 0, sizeof(dummy));
@@ -215,13 +219,14 @@ svcudp_recv(
 		  return (FALSE);
 	}
 
-	xprt->xp_addrlen = sizeof(struct sockaddr_in);
+	addrlen = sizeof(struct sockaddr_in);
 	rlen = recvfrom(xprt->xp_sock, rpc_buffer(xprt), (int) su->su_iosz,
-	    0, (struct sockaddr *)&(xprt->xp_raddr), &(xprt->xp_addrlen));
+	    0, (struct sockaddr *)&(xprt->xp_raddr), &addrlen);
 	if (rlen == -1 && errno == EINTR)
 		goto again;
 	if (rlen < (int) (4*sizeof(uint32_t)))
 		return (FALSE);
+	xprt->xp_addrlen = addrlen;
 	xdrs->x_op = XDR_DECODE;
 	XDR_SETPOS(xdrs, 0);
 	if (! xdr_callmsg(xdrs, msg))

@@ -186,12 +186,10 @@ krb5_pac_get_buffer(krb5_context context,
     if (ret != 0)
         return ret;
 
-    data->data = malloc(d.length);
+    data->data = k5memdup(d.data, d.length, &ret);
     if (data->data == NULL)
-        return ENOMEM;
-
+        return ret;
     data->length = d.length;
-    memcpy(data->data, d.data, d.length);
 
     return 0;
 }
@@ -275,13 +273,11 @@ k5_pac_copy(krb5_context context,
     if (pac == NULL)
         return ENOMEM;
 
-    pac->pac = (PACTYPE *)malloc(header_len);
+    pac->pac = k5memdup(src->pac, header_len, &code);
     if (pac->pac == NULL) {
         free(pac);
-        return ENOMEM;
+        return code;
     }
-
-    memcpy(pac->pac, src->pac, header_len);
 
     code = krb5int_copy_data_contents(context, &src->data, &pac->data);
     if (code != 0) {
@@ -379,10 +375,9 @@ krb5_pac_parse(krb5_context context,
 }
 
 static krb5_error_code
-k5_time_to_seconds_since_1970(krb5_int64 ntTime,
-                              krb5_timestamp *elapsedSeconds)
+k5_time_to_seconds_since_1970(int64_t ntTime, krb5_timestamp *elapsedSeconds)
 {
-    krb5_ui_8 abstime;
+    uint64_t abstime;
 
     ntTime /= 10000000;
 
@@ -397,8 +392,7 @@ k5_time_to_seconds_since_1970(krb5_int64 ntTime,
 }
 
 krb5_error_code
-k5_seconds_since_1970_to_time(krb5_timestamp elapsedSeconds,
-                              krb5_ui_8 *ntTime)
+k5_seconds_since_1970_to_time(krb5_timestamp elapsedSeconds, uint64_t *ntTime)
 {
     *ntTime = elapsedSeconds;
 
@@ -422,7 +416,7 @@ k5_pac_validate_client(krb5_context context,
     unsigned char *p;
     krb5_timestamp pac_authtime;
     krb5_ui_2 pac_princname_length;
-    krb5_int64 pac_nt_authtime;
+    int64_t pac_nt_authtime;
     krb5_principal pac_principal;
 
     ret = k5_pac_locate_buffer(context, pac, KRB5_PAC_CLIENT_INFO,
@@ -538,11 +532,9 @@ k5_pac_verify_server_checksum(krb5_context context,
         return KRB5KRB_AP_ERR_INAPP_CKSUM;
 
     pac_data.length = pac->data.length;
-    pac_data.data = malloc(pac->data.length);
+    pac_data.data = k5memdup(pac->data.data, pac->data.length, &ret);
     if (pac_data.data == NULL)
-        return ENOMEM;
-
-    memcpy(pac_data.data, pac->data.data, pac->data.length);
+        return ret;
 
     /* Zero out both checksum buffers */
     ret = k5_pac_zero_signature(context, pac, KRB5_PAC_SERVER_CHECKSUM,

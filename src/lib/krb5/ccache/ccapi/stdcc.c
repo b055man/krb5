@@ -32,6 +32,7 @@
 #if defined(_WIN32) || defined(USE_CCAPI)
 
 #include "k5-int.h"
+#include "../cc-int.h"
 #include "stdcc.h"
 #include "stdcc_util.h"
 #include "string.h"
@@ -620,8 +621,8 @@ krb5_stdccv3_retrieve (krb5_context context,
                        krb5_creds *mcreds,
                        krb5_creds *creds)
 {
-    return krb5_cc_retrieve_cred_default (context, id, whichfields,
-                                          mcreds, creds);
+    return k5_cc_retrieve_cred_default(context, id, whichfields, mcreds,
+                                       creds);
 }
 
 /*
@@ -885,7 +886,7 @@ krb5_stdccv3_ptcursor_new(krb5_context context,
 
     ptcursor = malloc(sizeof(*ptcursor));
     if (ptcursor == NULL) {
-        err = ENOMEM;
+        err = ccErrNoMem;
     }
     else {
         memset(ptcursor, 0, sizeof(*ptcursor));
@@ -910,7 +911,7 @@ krb5_stdccv3_ptcursor_new(krb5_context context,
 
     *cursor = ptcursor;
 
-    return err;
+    return cc_err_xlate(err);
 }
 
 krb5_error_code KRB5_CALLCONV
@@ -936,12 +937,12 @@ krb5_stdccv3_ptcursor_next(
 
     if (!err) {
         newCache = (krb5_ccache) malloc (sizeof (*newCache));
-        if (!newCache) { err = KRB5_CC_NOMEM; }
+        if (!newCache) { err = ccErrNoMem; }
     }
 
     if (!err) {
         ccapi_data = (stdccCacheDataPtr) malloc (sizeof (*ccapi_data));
-        if (!ccapi_data) { err = KRB5_CC_NOMEM; }
+        if (!ccapi_data) { err = ccErrNoMem; }
     }
 
     if (!err) {
@@ -955,7 +956,7 @@ krb5_stdccv3_ptcursor_next(
 
     if (!err) {
         name = strdup (ccstring->data);
-        if (!name) { err = KRB5_CC_NOMEM; }
+        if (!name) { err = ccErrNoMem; }
     }
 
     if (!err) {
@@ -984,7 +985,7 @@ krb5_stdccv3_ptcursor_next(
         err = ccNoError;
     }
 
-    return err;
+    return cc_err_xlate(err);
 }
 
 krb5_error_code KRB5_CALLCONV
@@ -1090,8 +1091,9 @@ krb5_error_code KRB5_CALLCONV krb5_stdccv3_switch_to
     stdccCacheDataPtr ccapi_data = id->data;
     int err;
 
-    if ((retval = stdccv3_setup(context, ccapi_data)))
-        return retval;
+    retval = stdccv3_setup(context, ccapi_data);
+    if (retval)
+        return cc_err_xlate(retval);
 
     err = cc_ccache_set_default(ccapi_data->NamedCache);
     return cc_err_xlate(err);
@@ -1486,8 +1488,8 @@ krb5_stdcc_retrieve(context, id, whichfields, mcreds, creds)
     krb5_creds *mcreds;
     krb5_creds *creds;
 {
-    return krb5_cc_retrieve_cred_default (context, id, whichfields,
-                                          mcreds, creds);
+    return k5_cc_retrieve_cred_default(context, id, whichfields, mcreds,
+                                       creds);
 }
 
 #endif

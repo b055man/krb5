@@ -75,6 +75,11 @@ gss_krb5int_export_lucid_sec_context(
     *minor_status = 0;
     *data_set = GSS_C_NO_BUFFER_SET;
 
+    if (ctx->terminated || !ctx->established) {
+        *minor_status = KG_CTX_INCOMPLETE;
+        return GSS_S_NO_CONTEXT;
+    }
+
     retval = generic_gss_oid_decompose(minor_status,
                                        GSS_KRB5_EXPORT_LUCID_SEC_CONTEXT_OID,
                                        GSS_KRB5_EXPORT_LUCID_SEC_CONTEXT_OID_LENGTH,
@@ -215,6 +220,7 @@ make_external_lucid_ctx_v1(
         }
     }
     else {
+        xfree(lctx);
         return EINVAL;  /* XXX better error code? */
     }
 

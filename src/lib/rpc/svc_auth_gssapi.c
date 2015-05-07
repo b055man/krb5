@@ -28,7 +28,7 @@
 
 #ifdef GSSAPI_KRB5
 /* This is here for the krb5_error_code typedef and the
-   KRB5KRB_AP_WRONG_PRINC #define.*/
+ * KRB5KRB_AP_ERR_NOT_US #define.*/
 #include <krb5.h>
 #endif
 
@@ -125,6 +125,8 @@ static int server_creds_count = 0;
 
 static auth_gssapi_log_badauth_func log_badauth = NULL;
 static caddr_t log_badauth_data = NULL;
+static auth_gssapi_log_badauth2_func log_badauth2 = NULL;
+static caddr_t log_badauth2_data = NULL;
 static auth_gssapi_log_badverf_func log_badverf = NULL;
 static caddr_t log_badverf_data = NULL;
 static auth_gssapi_log_miscerr_func log_miscerr = NULL;
@@ -140,6 +142,16 @@ typedef struct _client_list {
 
 static client_list *clients = NULL;
 
+
+/* Invoke log_badauth callbacks for an authentication failure. */
+static void
+badauth(OM_uint32 maj, OM_uint32 minor, SVCXPRT *xprt)
+{
+     if (log_badauth != NULL)
+	  (*log_badauth)(maj, minor, &xprt->xp_raddr, log_badauth_data);
+     if (log_badauth2 != NULL)
+	  (*log_badauth2)(maj, minor, xprt, log_badauth2_data);
+}
 
 enum auth_stat gssrpc__svcauth_gssapi(
      register struct svc_req *rqst,
@@ -404,8 +416,9 @@ enum auth_stat gssrpc__svcauth_gssapi(
 	       if (server_creds == client_data->server_creds)
 		    break;
 
-	       PRINTF(("accept_sec_context returned 0x%x 0x%x wrong-princ=%#x\n",
-		       call_res.gss_major, call_res.gss_minor, (int) KRB5KRB_AP_WRONG_PRINC));
+	       PRINTF(("accept_sec_context returned 0x%x 0x%x not-us=%#x\n",
+		       call_res.gss_major, call_res.gss_minor,
+		       (int) KRB5KRB_AP_ERR_NOT_US));
 	       if (call_res.gss_major == GSS_S_COMPLETE ||
 		   call_res.gss_major == GSS_S_CONTINUE_NEEDED) {
 		    /* server_creds was right, set it! */
@@ -422,7 +435,7 @@ enum auth_stat gssrpc__svcauth_gssapi(
 			   * error
 			   */
 			  || ((krb5_error_code) call_res.gss_minor !=
-			      (krb5_error_code) KRB5KRB_AP_WRONG_PRINC)
+			      (krb5_error_code) KRB5KRB_AP_ERR_NOT_US)
 #endif
 			  ) {
 		    break;
@@ -443,11 +456,7 @@ enum auth_stat gssrpc__svcauth_gssapi(
 					   call_res.gss_major,
 					   call_res.gss_minor));
 
-	       if (log_badauth != NULL)
-		    (*log_badauth)(call_res.gss_major,
-				   call_res.gss_minor,
-				   &rqst->rq_xprt->xp_raddr,
-				   log_badauth_data);
+	       badauth(call_res.gss_major, call_res.gss_minor, rqst->rq_xprt);
 
 	       gss_release_buffer(&minor_stat, &output_token);
 	       svc_sendreply(rqst->rq_xprt, xdr_authgssapi_init_res,
@@ -1025,6 +1034,14 @@ void svcauth_gssapi_set_log_badauth_func(
 {
      log_badauth = func;
      log_badauth_data = data;
+}
+
+void
+svcauth_gssapi_set_log_badauth2_func(auth_gssapi_log_badauth2_func func,
+				     caddr_t data)
+{
+     log_badauth2 = func;
+     log_badauth2_data = data;
 }
 
 /*

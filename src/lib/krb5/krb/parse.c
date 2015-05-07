@@ -199,21 +199,20 @@ krb5_parse_name_flags(krb5_context context, const char *name,
     if (!has_realm) {
         if (require_realm) {
             ret = KRB5_PARSE_MALFORMED;
-            krb5_set_error_message(context, ret,
-                                   _("Principal %s is missing required realm"),
-                                   name);
+            k5_setmsg(context, ret,
+                      _("Principal %s is missing required realm"), name);
             goto cleanup;
         }
         if (!no_realm && !ignore_realm) {
             ret = krb5_get_default_realm(context, &default_realm);
             if (ret)
                 goto cleanup;
+            krb5_free_data_contents(context, &princ->realm);
             princ->realm = string2data(default_realm);
         }
     } else if (no_realm) {
         ret = KRB5_PARSE_MALFORMED;
-        krb5_set_error_message(context, ret,
-                               _("Principal %s has realm present"), name);
+        k5_setmsg(context, ret, _("Principal %s has realm present"), name);
         goto cleanup;
     } else if (ignore_realm) {
         krb5_free_data_contents(context, &princ->realm);

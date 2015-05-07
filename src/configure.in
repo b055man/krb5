@@ -1,5 +1,20 @@
 K5_AC_INIT([aclocal.m4])
 
+# If $runstatedir isn't set by autoconf (<2.70), set it manually.
+if test x"$runstatedir" = x; then
+  runstatedir=$localstatedir/run
+fi
+AC_SUBST(runstatedir)
+
+# Don't make duplicate profile path entries for /etc/krb5.conf if
+# $sysconfdir is /etc
+if test "$sysconfdir" = /etc; then
+  SYSCONFCONF=""
+else
+  SYSCONFCONF=":${sysconfdir}/krb5.conf"
+fi
+AC_SUBST(SYSCONFCONF)
+
 CONFIG_RULES
 KRB5_VERSION=K5_VERSION
 AC_SUBST(KRB5_VERSION)
@@ -120,7 +135,6 @@ KRB5_NEED_PROTO([#include <string.h>
 /* Solaris 8 declares swab in stdlib.h.  */
 #include <stdlib.h>
 ],swab,1)
-KRB5_NEED_PROTO([#include <ctype.h>],isblank,1)
 
 AC_PROG_AWK
 KRB5_AC_INET6
@@ -132,9 +146,33 @@ CHECK_SIGNALS
 AC_ARG_WITH([vague-errors],
 AC_HELP_STRING([--with-vague-errors],[Do not @<:@do@:>@ send helpful errors to client]), , withval=no)
 if test "$withval" = yes; then
-	AC_MSG_RESULT(Supplying vague error messages to KDC clients)
+	AC_MSG_NOTICE(Supplying vague error messages to KDC clients)
 	AC_DEFINE(KRBCONF_VAGUE_ERRORS,1,[Define if the KDC should return only vague error codes to clients])
 fi
+
+# Check which (if any) audit plugin to build
+audit_plugin=""
+AC_ARG_ENABLE([audit-plugin],
+AC_HELP_STRING([--enable-audit-plugin=IMPL],
+               [use audit plugin @<:@ do not use audit @:>@]), , enableval=no)
+if test "$enableval" != no; then
+    case "$enableval" in
+    simple)
+        # if audit_log_user_message is found, we assume
+        # that audit_open and audit_close are also defined.
+        AC_CHECK_LIB(audit, audit_log_user_message,
+                     [AUDIT_IMPL_LIBS=-laudit
+                     K5_GEN_MAKEFILE(plugins/audit/simple)
+                     audit_plugin=plugins/audit/simple ],
+                     AC_MSG_ERROR([libaudit not found or undefined symbol audit_log_user_message]))
+        ;;
+    *)
+        AC_MSG_ERROR([Unknown audit plugin implementation $enableval.])
+        ;;
+    esac
+fi
+AC_SUBST(AUDIT_IMPL_LIBS)
+AC_SUBST(audit_plugin)
 
 # WITH_CRYPTO_IMPL
 
@@ -142,7 +180,7 @@ CRYPTO_IMPL="builtin"
 AC_ARG_WITH([crypto-impl],
 AC_HELP_STRING([--with-crypto-impl=IMPL], [use specified crypto implementation @<:@builtin@:>@]),
 [CRYPTO_IMPL=$withval
-AC_MSG_RESULT("k5crypto will use \'$withval\'")
+AC_MSG_NOTICE(k5crypto will use '$withval')
 ], withval=builtin)
 case "$withval" in
 builtin)
@@ -193,7 +231,7 @@ else
 AC_ARG_WITH([prng-alg],
 AC_HELP_STRING([--with-prng-alg=ALG], [use specified PRNG algorithm. Ignored for nss. @<:@fortuna@:>@]),
 [PRNG_ALG=$withval
-AC_MSG_RESULT("k5crypto will use \'$withval\'")
+AC_MSG_NOTICE(k5crypto will use '$withval')
 ], PRNG_ALG=fortuna)
 fi
 AC_CONFIG_COMMANDS(PRNG_ALG, , PRNG_ALG=$PRNG_ALG)
@@ -208,12 +246,15 @@ PKINIT_CRYPTO_IMPL="$CRYPTO_IMPL"
 AC_ARG_WITH([pkinit-crypto-impl],
 AC_HELP_STRING([--with-pkinit-crypto-impl=IMPL], [use specified pkinit crypto implementation @<:@openssl@:>@]),
 [PKINIT_CRYPTO_IMPL=$withval
-AC_MSG_RESULT("pkinit will use \'$withval\'")
+AC_MSG_NOTICE(pkinit will use '$withval')
 ], withval=$PKINIT_CRYPTO_IMPL)
 case "$withval" in
 builtin|openssl)
   AC_CHECK_LIB(crypto, PKCS7_get_signer_info, PKINIT_CRYPTO_IMPL_LIBS=-lcrypto)
   PKINIT_CRYPTO_IMPL=openssl
+  AC_CHECK_LIB(crypto, CMS_get0_content,
+               [AC_DEFINE([HAVE_OPENSSL_CMS], 1,
+                          [Define if OpenSSL supports cms.])])
   ;;
 cyassl)
 #PKINIT_CRYPTO_IMPL=
@@ -247,15 +288,86 @@ AC_SUBST(PKINIT_CRYPTO_IMPL)
 AC_SUBST(PKINIT_CRYPTO_IMPL_CFLAGS)
 AC_SUBST(PKINIT_CRYPTO_IMPL_LIBS)
 
-# --with-kdc-kdb-update makes the KDC update the database with last request
-# information and failure information.
+# WITH_TLS_IMPL
 
-AC_ARG_WITH([kdc-kdb-update],
-AC_HELP_STRING([--with-kdc-kdb-update],[Update the database @<:@don't update@:>@]), , withval=no)
-if test "$withval" = yes; then
-	AC_MSG_RESULT(Updating KDC database with each request)
-	AC_DEFINE(KRBCONF_KDC_MODIFIES_KDB,1,[Define if KDC should update database with each request])
+AC_ARG_WITH([tls-impl],
+AC_HELP_STRING([--with-tls-impl=IMPL],
+               [use specified TLS implementation @<:@auto@:>@]),
+[TLS_IMPL=$withval],[TLS_IMPL=auto])
+case "$TLS_IMPL" in
+openssl|auto)
+  AC_CHECK_LIB(ssl,SSL_CTX_new,[have_lib_ssl=true],[have_lib_ssl=false],
+               -lcrypto)
+  AC_MSG_CHECKING([for OpenSSL])
+  if test x$have_lib_ssl = xtrue ; then
+    AC_DEFINE(TLS_IMPL_OPENSSL,1,[Define if TLS implementation is OpenSSL])
+    AC_MSG_RESULT([yes])
+    TLS_IMPL_LIBS="-lssl -lcrypto"
+    TLS_IMPL=openssl
+    AC_MSG_NOTICE([TLS module will use OpenSSL])
+  else
+    if test "$TLS_IMPL" = openssl ; then
+      AC_MSG_ERROR([OpenSSL not found!])
+    else
+      AC_MSG_WARN([OpenSSL not found!])
+    fi
+    TLS_IMPL=no
+    AC_MSG_NOTICE(building without TLS support)
+  fi
+  ;;
+no)
+  AC_MSG_NOTICE(building without TLS support)
+  ;;
+*)
+  AC_MSG_ERROR([Unsupported TLS implementation $withval])
+  ;;
+esac
+
+if test "$TLS_IMPL" = no; then
+   AC_DEFINE(TLS_IMPL_NONE,1,[Define if no TLS implementation is selected])
 fi
+
+AC_SUBST(TLS_IMPL)
+AC_SUBST(TLS_IMPL_CFLAGS)
+AC_SUBST(TLS_IMPL_LIBS)
+
+AC_ARG_ENABLE([aesni],
+AC_HELP_STRING([--disable-aesni],[Do not build with AES-NI support]), ,
+enable_aesni=check)
+if test "$CRYPTO_IMPL" = builtin -a "x$enable_aesni" != xno; then
+    case "$host" in
+    i686-*)
+	aesni_obj=iaesx86.o
+	aesni_machine=x86
+	;;
+    x86_64-*)
+	aesni_obj=iaesx64.o
+	aesni_machine=amd64
+	;;
+    esac
+    case "$host" in
+    *-*-linux* | *-*-gnu* | *-*-*bsd* | *-*-solaris*)
+	# All Unix-like platforms need -D__linux__ for iaesx64.s to
+	# use the System V x86-64 calling convention.
+	aesni_flags="-D__linux__ -f elf -m $aesni_machine"
+	;;
+    esac
+    if test "x$aesni_obj" != x && test "x$aesni_flags" != x; then
+	AC_CHECK_PROG(YASM,yasm,yasm)
+	AC_CHECK_HEADERS(cpuid.h)
+	if test x"$YASM" != x -a "x$ac_cv_header_cpuid_h" = xyes; then
+	    AESNI_OBJ=$aesni_obj
+	    AESNI_FLAGS=$aesni_flags
+	    AC_DEFINE(AESNI,1,[Define if AES-NI support is enabled])
+	    AC_MSG_NOTICE([Building with AES-NI support])
+	fi
+    fi
+    if test "x$enable_aesni" = xyes -a "x$AESNI_OBJ" = x; then
+	AC_MSG_ERROR([AES-NI support requested but cannot be built])
+    fi
+fi
+AC_SUBST(AESNI_OBJ)
+AC_SUBST(AESNI_FLAGS)
 
 AC_ARG_ENABLE([kdc-lookaside-cache],
 AC_HELP_STRING([--disable-kdc-lookaside-cache],
@@ -276,7 +388,8 @@ AC_CONFIG_HEADERS(include/autoconf.h, [echo timestamp > include/autoconf.stamp])
 AC_PROG_LEX
 AC_C_CONST
 AC_HEADER_DIRENT
-AC_CHECK_FUNCS(strdup setvbuf seteuid setresuid setreuid setegid setresgid setregid setsid flock fchmod chmod strftime strptime geteuid setenv unsetenv getenv gmtime_r localtime_r bswap16 bswap64 mkstemp getusershell access getcwd srand48 srand srandom stat strchr strerror strerror_r timegm isblank)
+AC_FUNC_STRERROR_R
+AC_CHECK_FUNCS(strdup setvbuf seteuid setresuid setreuid setegid setresgid setregid setsid flock fchmod chmod strftime strptime geteuid setenv unsetenv getenv gmtime_r localtime_r bswap16 bswap64 mkstemp getusershell access getcwd srand48 srand srandom stat strchr strerror timegm)
 
 AC_CHECK_FUNC(mkstemp,
 [MKSTEMP_ST_OBJ=
@@ -309,9 +422,6 @@ AC_CHECK_HEADER(regexp.h, [], [],
 #define RETURN(c) return(c)
 #define ERROR(c)
 ])
-AC_CHECK_MEMBERS([struct sockaddr_in.sin_len, struct sockaddr.sa_len], , ,
-  [#include <sys/types.h>
-#include <netinet/in.h>])
 AC_CHECK_MEMBERS([struct stat.st_mtimensec,struct stat.st_mtimespec.tv_nsec,struct stat.st_mtim.tv_nsec],,,[#include <sys/types.h>
 #include <sys/stat.h>])
 KRB5_AC_REGEX_FUNCS
@@ -702,16 +812,6 @@ AH_BOTTOM([
 #endif /* KRB5_AUTOCONF_H */
 ])
 
-# Not used yet, but let's find out what we've got on the platforms
-# we're working with....
-AC_CHECK_HEADERS(inttypes.h stdint.h)
-AC_CHECK_TYPES([uint32_t, int32_t, uint64_t, int64_t, uint_least32_t, uintptr_t, uintmax_t, long long], , , [
-#ifdef HAVE_STDINT_H
-# include <stdint.h>
-#elif defined(HAVE_INTTYPES_H)
-# include <inttypes.h>
-#endif
-])
 AC_CHECK_TYPES([struct cmsghdr, struct in_pktinfo, struct in6_pktinfo, struct sockaddr_storage], , , [
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -819,14 +919,6 @@ AC_CHECK_PROG(RUNTEST,runtest,runtest)
 AC_CHECK_PROG(PERL,perl,perl)
 
 # lib/gssapi
-AC_CHECK_HEADER(stdint.h,[
-	include_stdint='awk '\''END{printf("%cinclude <stdint.h>\n", 35);}'\'' < /dev/null'],
-	include_stdint='echo "/* no stdint.h */"')
-AC_SUBST(include_stdint)
-AC_CHECK_HEADER(inttypes.h,[
-	include_inttypes='awk '\''END{printf("%cinclude <inttypes.h>\n", 35);}'\'' < /dev/null'],
-	include_inttypes='echo "/* no inttypes.h */"')
-AC_SUBST(include_inttypes)
 AC_CHECK_HEADER(xom.h,[
 	include_xom='awk '\''END{printf("%cinclude <xom.h>\n", 35);}'\'' < /dev/null'], [
 	include_xom='echo "/* no xom.h */"'])
@@ -912,45 +1004,6 @@ fi
 AC_SUBST(GSSRPC__SYS_PARAM_H)
 AC_SUBST(GSSRPC__NETDB_H)
 
-AC_CACHE_CHECK([for uint32_t in sys/types.h],
-  [krb5_cv_header_sys_types_h_uint32_t],
-  [AC_TRY_COMPILE([#include <sys/types.h>],
-      [uint32_t i = 0;],
-      [krb5_cv_header_sys_types_h_uint32_t=yes],
-      [krb5_cv_header_sys_types_h_uint32_t=no])])
-AC_CACHE_CHECK([for uint32_t in stdint.h],
-  [krb5_cv_header_stdint_h_uint32_t],
-  [AC_TRY_COMPILE([#include <stdint.h>],
-      [uint32_t i = 0;],
-      [krb5_cv_header_stdint_h_uint32_t=yes],
-      [krb5_cv_header_stdint_h_uint32_t=no])])
-AC_CACHE_CHECK([for uint32_t in inttypes.h],
-  [krb5_cv_header_inttypes_h_uint32_t],
-  [AC_TRY_COMPILE([#include <inttypes.h>],
-      [uint32_t i = 0;],
-      [krb5_cv_header_inttypes_h_uint32_t=yes],
-      [krb5_cv_header_inttypes_h_uint32_t=no])])
-GSSRPC__STDINT_H='/* #include <stdint.h> */'
-GSSRPC__INTTYPES_H='/* #include <inttypes.h> */'
-GSSRPC__FAKE_UINT32='/* #undef GSSRPC__FAKE_INT32 */'
-if test $krb5_cv_header_sys_types_h_uint32_t = yes; then
-  : # already included sys/types.h
-else
-  if test $krb5_cv_header_stdint_h_uint32_t = yes; then
-    GSSRPC__STDINT_H='#include <stdint.h>'
-  else
-    if test $krb5_cv_header_inttypes_h_uint32_t = yes; then
-      GSSRPC__INTTYPES_H='#include <inttypes.h>'
-    else
-      AC_MSG_WARN([can't find a fixed-width 32-bit type anywhere; faking it])
-      GSSRPC__FAKE_UINT32='#define GSSRPC__FAKE_UINT32 1'
-    fi
-  fi
-fi
-AC_SUBST(GSSRPC__STDINT_H)
-AC_SUBST(GSSRPC__INTTYPES_H)
-AC_SUBST(GSSRPC__FAKE_UINT32)
-
 AC_CACHE_CHECK([for BSD type aliases], [krb5_cv_type_bsdaliases],
   [AC_TRY_COMPILE(
     [#include <sys/types.h>
@@ -966,15 +1019,6 @@ else
   GSSRPC__BSD_TYPEALIASES='#define GSSRPC__BSD_TYPEALIASES 1'
 fi
 AC_SUBST(GSSRPC__BSD_TYPEALIASES)
-
-# sockaddr length field checks
-
-AC_CHECK_MEMBERS([struct sockaddr_in.sin_len], , ,
-  [#include <sys/types.h>
-@%:@include <netinet/in.h>])
-AC_CHECK_MEMBERS([struct sockaddr.sa_len], , ,
-  [#include <sys/types.h>
-@%:@include <sys/socket.h>])
 
 AC_MSG_CHECKING([return type of setrpcent])
 AC_CACHE_VAL(k5_cv_type_setrpcent,
@@ -998,16 +1042,7 @@ extern void endrpcent();],
 AC_MSG_RESULT($k5_cv_type_endrpcent)
 AC_DEFINE_UNQUOTED(ENDRPCENT_TYPE, $k5_cv_type_endrpcent, [Define as return type of endrpcent])
 K5_GEN_FILE(include/gssrpc/types.h:include/gssrpc/types.hin)
-changequote(<<, >>)
-case "$krb5_cv_host" in
-*-*-solaris2.[012345]*)
-	PASS=tcp
-	;;
-*)
-	PASS="tcp udp"
-	;;
-esac
-changequote([, ])
+PASS=tcp
 AC_SUBST(PASS)
 
 # for pkinit
@@ -1152,6 +1187,12 @@ if test -n "$OPENLDAP_PLUGIN"; then
   AC_DEFINE([ENABLE_LDAP], 1, [Define if LDAP KDB support within the Kerberos library (mainly ASN.1 code) should be enabled.])
   AC_SUBST(LDAP_LIBS)
 
+  AC_CHECK_HEADERS([sasl/sasl.h], [HAVE_SASL=yes], [HAVE_SASL=no])
+  AC_SUBST(HAVE_SASL)
+  if test "$HAVE_SASL" = no; then
+    AC_MSG_WARN([not building LDAP SASL support])
+  fi
+
   K5_GEN_MAKEFILE(plugins/kdb/ldap)
   K5_GEN_MAKEFILE(plugins/kdb/ldap/ldap_util)
   K5_GEN_MAKEFILE(plugins/kdb/ldap/libkdb_ldap)
@@ -1232,7 +1273,7 @@ AC_ARG_WITH([system-verto],
   [AC_HELP_STRING([--with-system-verto], [always use system verto library])],
   [], [with_system_verto=default])
 VERTO_CFLAGS=
-VERTO_LIBS="-lverto-k5ev -lverto"
+VERTO_LIBS="-lverto"
 VERTO_VERSION=k5
 if test "x$with_system_verto" != xno; then
   if verto_cflags=`pkg-config --cflags libverto 2>&1`; then
@@ -1240,7 +1281,7 @@ if test "x$with_system_verto" != xno; then
     VERTO_LIBS=`pkg-config --libs libverto`
     VERTO_VERSION=sys
   else
-    AC_CHECK_LIB([verto], [verto_run], [VERTO_VERSION=sys; VERTO_LIBS=-lverto],
+    AC_CHECK_LIB([verto], [verto_set_flags], [VERTO_VERSION=sys],
       [if test "x$with_system_verto" = xyes; then
         AC_MSG_ERROR([cannot detect system libverto])
       fi])
@@ -1250,7 +1291,6 @@ if test "x$VERTO_VERSION" = xsys; then
   AC_MSG_NOTICE([Using system libverto])
 else
   AC_MSG_RESULT([Using built-in libverto])
-  AC_DEFINE([INTERNAL_VERTO],[1],[Define if using bundled libverto])
 fi
 AC_SUBST([VERTO_CFLAGS])
 AC_SUBST([VERTO_LIBS])
@@ -1263,6 +1303,13 @@ if test "${localedir+set}" != set; then
     localedir='$(datadir)/locale'
 fi
 AC_SUBST(localedir)
+
+# For KCM lib/krb5/ccache to build KCM Mach RPC support for OS X only.
+case $host in
+*-*-darwin* | *-*-rhapsody*) OSX=osx ;;
+*)                           OSX=no ;;
+esac
+AC_SUBST(OSX)
 
 # Build-time default ccache, keytab, and client keytab names.  These
 # can be given as variable arguments DEFCCNAME, DEFKTNAME, and
@@ -1279,18 +1326,37 @@ if test "x$with_krb5_config" != xno; then
 	if test "x$with_krb5_config" = xyes; then
 		with_krb5_config=krb5-config
 	fi
-	if $with_krb5_config --help 2>&1 | grep -q defccname; then
+	if $with_krb5_config --help 2>&1 | grep defccname >/dev/null; then
 		AC_MSG_NOTICE([Using $with_krb5_config for build defaults])
 		: "${DEFCCNAME=`$with_krb5_config --defccname`}"
 		: "${DEFKTNAME=`$with_krb5_config --defktname`}"
 		: "${DEFCKTNAME=`$with_krb5_config --defcktname`}"
 	fi
 fi
+dnl The outer brackets around the case statement prevent m4 from eating the
+dnl brackets in the glob patterns.
 if test "${DEFCCNAME+set}" != set; then
-	DEFCCNAME=FILE:/tmp/krb5cc_%{uid}
+	[case $host in
+	*-*-darwin[0-9].* | *-*-darwin10.*)
+		# Use the normal default for OS X 10.6 (Darwin 10) and prior.
+		;;
+	*-*-darwin*)
+		# For OS X 10.7 (Darwin 11) and later, the native ccache uses
+		# the KCM daemon.
+		DEFCCNAME=KCM:
+		;;
+	esac]
+	if test "${DEFCCNAME+set}" != set; then
+		DEFCCNAME=FILE:/tmp/krb5cc_%{uid}
+	fi
 fi
-: "${DEFKTNAME=FILE:/etc/krb5.keytab}"
-: "${DEFCKTNAME=FILE:/etc/krb5.client-keytab}"
+if test "${DEFKTNAME+set}" != set; then
+	DEFKTNAME=FILE:/etc/krb5.keytab
+fi
+if test "${DEFCKTNAME+set}" != set; then
+	adl_RECURSIVE_EVAL($localstatedir, exp_localstatedir)
+	DEFCKTNAME=FILE:$exp_localstatedir/krb5/user/%{euid}/client.keytab
+fi
 AC_MSG_NOTICE([Default ccache name: $DEFCCNAME])
 AC_MSG_NOTICE([Default keytab name: $DEFKTNAME])
 AC_MSG_NOTICE([Default client keytab name: $DEFCKTNAME])
@@ -1299,11 +1365,20 @@ AC_DEFINE_UNQUOTED(DEFKTNAME, ["$DEFKTNAME"], [Define to default keytab name])
 AC_DEFINE_UNQUOTED(DEFCKTNAME, ["$DEFCKTNAME"],
                    [Define to default client keytab name])
 
-AC_CONFIG_FILES(krb5-config, [chmod +x krb5-config])
+AC_CONFIG_FILES([build-tools/krb5-config], [chmod +x build-tools/krb5-config])
+AC_CONFIG_FILES([build-tools/kadm-server.pc
+	build-tools/kadm-client.pc
+	build-tools/kdb.pc
+	build-tools/krb5.pc
+	build-tools/krb5-gssapi.pc
+	build-tools/mit-krb5.pc
+	build-tools/mit-krb5-gssapi.pc
+	build-tools/gssrpc.pc
+])
 V5_AC_OUTPUT_MAKEFILE(.
 
-	util util/support util/profile util/profile/testmod util/send-pr
-	util/verto util/k5ev
+	util util/support util/profile util/profile/testmod
+	util/verto
 
 	lib lib/kdb
 
@@ -1327,15 +1402,20 @@ dnl	lib/krb5/ccache/ccapi
 	lib/rpc lib/rpc/unit-test
 
 	lib/kadm5 lib/kadm5/clnt lib/kadm5/srv lib/kadm5/unit-test
-
+	lib/krad
 	lib/apputils
 
 dnl	ccapi ccapi/lib ccapi/lib/unix ccapi/server ccapi/server/unix ccapi/test
 
-	kdc slave config-files gen-manpages man doc include
+	kdc slave config-files build-tools man doc include
 
+	plugins/hostrealm/test
 	plugins/locate/python
+	plugins/localauth/test
 	plugins/kadm5_hook/test
+	plugins/pwqual/test
+	plugins/audit
+	plugins/audit/test
 	plugins/kdb/db2
 	plugins/kdb/db2/libdb2
 	plugins/kdb/db2/libdb2/hash
@@ -1346,11 +1426,13 @@ dnl	ccapi ccapi/lib ccapi/lib/unix ccapi/server ccapi/server/unix ccapi/test
 	plugins/kdb/db2/libdb2/test
 	plugins/kdb/hdb
 	plugins/preauth/cksum_body
+	plugins/preauth/otp
 	plugins/preauth/securid_sam2
 	plugins/preauth/wpse
 	plugins/authdata/greet
 	plugins/authdata/greet_client
 	plugins/authdata/greet_server
+	plugins/tls/k5tls
 
 	clients clients/klist clients/kinit clients/kvno
 	clients/kdestroy clients/kpasswd clients/ksu clients/kswitch
@@ -1365,7 +1447,7 @@ dnl	ccapi ccapi/lib ccapi/lib/unix ccapi/server ccapi/server/unix ccapi/test
 
 	tests tests/resolve tests/asn.1 tests/create tests/hammer
 	tests/verify tests/gssapi tests/dejagnu tests/threads tests/shlib
-	tests/gss-threads tests/misc tests/mkeystash_compat
+	tests/gss-threads tests/misc
 	util/gss-kernel-lib util/collected-client-lib
 	po
 )

@@ -2,17 +2,17 @@
  * prof-int.h
  */
 
+#include "k5-platform.h"
+#include "k5-thread.h"
+#include "k5-plugin.h"
+
 #include <time.h>
-#include <stdio.h>
 
 #if defined(__MACH__) && defined(__APPLE__)
 #include <TargetConditionals.h>
 #define PROFILE_SUPPORTS_FOREIGN_NEWLINES
 #endif
 
-#include "k5-thread.h"
-#include "k5-platform.h"
-#include "k5-plugin.h"
 #include "com_err.h"
 #include "profile.h"
 
@@ -49,7 +49,7 @@ struct _prf_data_t {
 	   This is icky.  I just hope it's adequate.
 
 	   For next major release, fix this.  */
-	union { double d; void *p; UINT64_TYPE ll; k5_mutex_t m; } pad;
+	union { double d; void *p; uint64_t ll; k5_mutex_t m; } pad;
 
 	int		refcount; /* prf_file_t references */
 	struct _prf_data_t *next;
@@ -244,8 +244,8 @@ int profile_file_is_writable
 void profile_dereference_data (prf_data_t);
 void profile_dereference_data_locked (prf_data_t);
 
-int profile_lock_global (void);
-int profile_unlock_global (void);
+void profile_lock_global (void);
+void profile_unlock_global (void);
 
 /* prof_init.c -- included from profile.h */
 errcode_t profile_ser_size

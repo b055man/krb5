@@ -24,7 +24,6 @@
  * or implied warranty.
  */
 
-#include <stdio.h>
 #include "k5-int.h"
 #include "com_err.h"
 #include "utility.h"
@@ -689,6 +688,58 @@ main(argc, argv)
         encode_run(enc_data, "pa_fx_fast_reply", "",
                    encode_krb5_pa_fx_fast_reply);
         ktest_destroy_enc_data(&enc_data);
+    }
+    /****************************************************************/
+    /* encode_krb5_otp_tokeninfo */
+    {
+        krb5_otp_tokeninfo ti;
+        ktest_make_minimal_otp_tokeninfo(&ti);
+        encode_run(ti, "otp_tokeninfo", "(optionals NULL)",
+                   encode_krb5_otp_tokeninfo);
+        ktest_empty_otp_tokeninfo(&ti);
+        ktest_make_maximal_otp_tokeninfo(&ti);
+        encode_run(ti, "otp_tokeninfo", "", encode_krb5_otp_tokeninfo);
+        ktest_empty_otp_tokeninfo(&ti);
+    }
+    /****************************************************************/
+    /* encode_krb5_pa_otp_challenge */
+    {
+        krb5_pa_otp_challenge ch;
+        ktest_make_minimal_pa_otp_challenge(&ch);
+        encode_run(ch, "pa_otp_challenge", "(optionals NULL)",
+                   encode_krb5_pa_otp_challenge);
+        ktest_empty_pa_otp_challenge(&ch);
+        ktest_make_maximal_pa_otp_challenge(&ch);
+        encode_run(ch, "pa_otp_challenge", "", encode_krb5_pa_otp_challenge);
+        ktest_empty_pa_otp_challenge(&ch);
+    }
+    /****************************************************************/
+    /* encode_krb5_pa_otp_req */
+    {
+        krb5_pa_otp_req req;
+        ktest_make_minimal_pa_otp_req(&req);
+        encode_run(req, "pa_otp_req", "(optionals NULL)",
+                   encode_krb5_pa_otp_req);
+        ktest_empty_pa_otp_req(&req);
+        ktest_make_maximal_pa_otp_req(&req);
+        encode_run(req, "pa_otp_req", "", encode_krb5_pa_otp_req);
+        ktest_empty_pa_otp_req(&req);
+    }
+    /****************************************************************/
+    /* encode_krb5_pa_otp_enc_request */
+    {
+        krb5_data d;
+        ktest_make_sample_data(&d);
+        encode_run(d, "pa_otp_enc_req", "", encode_krb5_pa_otp_enc_req);
+        ktest_empty_data(&d);
+    }
+    /****************************************************************/
+    /* encode_krb5_kkdcp_message */
+    {
+        krb5_kkdcp_message info;
+        ktest_make_sample_kkdcp_message(&info);
+        encode_run(info, "kkdcp_message", "", encode_krb5_kkdcp_message);
+        ktest_empty_kkdcp_message(&info);
     }
 #ifndef DISABLE_PKINIT
     /****************************************************************/

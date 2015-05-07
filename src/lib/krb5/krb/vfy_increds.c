@@ -56,7 +56,7 @@ copy_creds_except(krb5_context context, krb5_ccache incc,
                   krb5_ccache outcc, krb5_principal princ)
 {
     krb5_error_code ret, ret2;
-    krb5_cc_cursor cur;
+    krb5_cc_cursor cur = NULL;
     krb5_creds creds;
 
     /* Turn off TC_OPENCLOSE on input ccache. */
@@ -69,9 +69,9 @@ copy_creds_except(krb5_context context, krb5_ccache incc,
 
     while (!(ret = krb5_cc_next_cred(context, incc, &cur, &creds))) {
         if (krb5_principal_compare(context, princ, creds.server))
-            continue;
-
-        ret = krb5_cc_store_cred(context, outcc, &creds);
+            ret = 0;
+        else
+            ret = krb5_cc_store_cred(context, outcc, &creds);
         krb5_free_cred_contents(context, &creds);
         if (ret)
             goto cleanup;
@@ -79,9 +79,13 @@ copy_creds_except(krb5_context context, krb5_ccache incc,
 
     if (ret != KRB5_CC_END)
         goto cleanup;
-    ret = 0;
+
+    ret = krb5_cc_end_seq_get(context, incc, &cur);
+    cur = NULL;
 
 cleanup:
+    if (cur != NULL)
+        (void)krb5_cc_end_seq_get(context, incc, &cur);
     ret2 = krb5_cc_set_flags(context, incc, KRB5_TC_OPENCLOSE);
     return (ret == 0) ? ret2 : ret;
 }
@@ -148,6 +152,15 @@ get_vfy_cred(krb5_context context, krb5_creds *creds, krb5_principal server,
         krb5_auth_con_free(context, authcon);
         authcon = NULL;
     }
+
+    /* Build an auth context that won't bother with replay checks -- it's
+     * not as if we're going to mount a replay attack on ourselves here. */
+    ret = krb5_auth_con_init(context, &authcon);
+    if (ret)
+        goto cleanup;
+    ret = krb5_auth_con_setflags(context, authcon, 0);
+    if (ret)
+        goto cleanup;
 
     /* Verify the ap_req. */
     ret = krb5_rd_req(context, &authcon, &ap_req, server, keytab, NULL, NULL);

@@ -141,9 +141,9 @@
 #define SAFE_GETUINT16(base, max, ptr, incr, s, label)  \
     do {                                                \
         if (!INCR_OK(base, max, ptr, incr)) goto label; \
-        (s) = (unsigned short)(p)[0] << 8               \
-            | (unsigned short)(p)[1];                   \
-        (p) += (incr);                                  \
+        (s) = (unsigned short)(ptr)[0] << 8             \
+            | (unsigned short)(ptr)[1];                 \
+        (ptr) += (incr);                                \
     } while (0)
 
 struct krb5int_dns_state;
@@ -154,6 +154,20 @@ int krb5int_dns_nextans(struct krb5int_dns_state *,
 int krb5int_dns_expand(struct krb5int_dns_state *,
                        const unsigned char *, char *, int);
 void krb5int_dns_fini(struct krb5int_dns_state *);
+
+struct srv_dns_entry {
+    struct srv_dns_entry *next;
+    int priority;
+    int weight;
+    unsigned short port;
+    char *host;
+};
+
+krb5_error_code krb5int_make_srv_query_realm(const krb5_data *realm,
+                                             const char *service,
+                                             const char *protocol,
+                                             struct srv_dns_entry **answers);
+void krb5int_free_srv_dns_data(struct srv_dns_entry *);
 
 #endif /* KRB5_DNS_LOOKUP */
 #endif /* !defined(KRB5_DNSGLUE_H) */

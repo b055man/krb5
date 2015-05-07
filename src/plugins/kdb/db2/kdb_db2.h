@@ -47,9 +47,8 @@ typedef struct _krb5_db2_context {
     krb5_boolean        tempdb;
     krb5_boolean        disable_last_success;
     krb5_boolean        disable_lockout;
+    krb5_boolean        unlockiter;
 } krb5_db2_context;
-
-#define KRB5_DB2_MAX_RETRY 5
 
 krb5_error_code krb5_db2_init(krb5_context);
 krb5_error_code krb5_db2_fini(krb5_context);
@@ -62,7 +61,7 @@ krb5_error_code krb5_db2_put_principal(krb5_context, krb5_db_entry *,
 krb5_error_code krb5_db2_iterate(krb5_context, char *,
                                  krb5_error_code (*)(krb5_pointer,
                                                      krb5_db_entry *),
-                                 krb5_pointer);
+                                 krb5_pointer, krb5_flags);
 krb5_error_code krb5_db2_set_nonblocking(krb5_context, krb5_boolean,
                                          krb5_boolean *);
 krb5_boolean krb5_db2_set_lockmode(krb5_context, krb5_boolean);

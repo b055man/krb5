@@ -60,7 +60,7 @@
  *   {lenstr}      size_t and const char *, as a counted string
  *   {hexlenstr}   size_t and const char *, as hex bytes
  *   {hashlenstr}  size_t and const char *, as four-character hex hash
- *   {connstate}   struct conn_state *, show socket type, address, port
+ *   {raddr}       struct remote_address *, show socket type, address, port
  *   {data}        krb5_data *, display as counted string
  *   {hexdata}     krb5_data *, display as hex bytes
  *   {errno}       int, display as number/errorstring
@@ -183,6 +183,11 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
 #define TRACE_ENCTYPE_LIST_UNKNOWN(c, profvar, name)                    \
     TRACE(c, "Unrecognized enctype name in {str}: {str}", profvar, name)
 
+#define TRACE_HOSTREALM_VTINIT_FAIL(c, ret)                             \
+    TRACE(c, "hostrealm module failed to init vtable: {kerr}", ret)
+#define TRACE_HOSTREALM_INIT_FAIL(c, name, ret)                         \
+    TRACE(c, "hostrealm module {str} failed to init: {kerr}", name, ret)
+
 #define TRACE_INIT_CREDS(c, princ)                              \
     TRACE(c, "Getting initial credentials for {princ}", princ)
 #define TRACE_INIT_CREDS_AS_KEY_GAK(c, keyblock)                        \
@@ -219,6 +224,14 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
     TRACE(c, "Retrieving {princ} from {keytab} (vno {int}, enctype {etype}) " \
           "with result: {kerr}", princ, keytab, (int) vno, enctype, err)
 
+#define TRACE_LOCALAUTH_INIT_CONFLICT(c, type, oldname, newname)        \
+    TRACE(c, "Ignoring localauth module {str} because it conflicts "    \
+          "with an2ln type {str} from module {str}", newname, type, oldname)
+#define TRACE_LOCALAUTH_VTINIT_FAIL(c, ret)                             \
+    TRACE(c, "localauth module failed to init vtable: {kerr}", ret)
+#define TRACE_LOCALAUTH_INIT_FAIL(c, name, ret)                         \
+    TRACE(c, "localauth module {str} failed to init: {kerr}", name, ret)
+
 #define TRACE_MK_REP(c, ctime, cusec, subkey, seqnum)                   \
     TRACE(c, "Creating AP-REP, time {long}.{int}, subkey {keyblock}, "  \
           "seqnum {int}", (long) ctime, (int) cusec, subkey, (int) seqnum)
@@ -235,6 +248,9 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
 #define TRACE_MSPAC_DISCARD_UNVERF(c)           \
     TRACE(c, "Filtering out unverified MS PAC")
 
+#define TRACE_PREAUTH_CONFLICT(c, name1, name2, patype)                 \
+    TRACE(c, "Preauth module {str} conflicts with module {str} for pa " \
+          "type {int}", name1, name2, (int) patype)
 #define TRACE_PREAUTH_COOKIE(c, len, data)                      \
     TRACE(c, "Received cookie: {lenstr}", (size_t) len, data)
 #define TRACE_PREAUTH_ENC_TS_KEY_GAK(c, keyblock)                       \
@@ -252,9 +268,9 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
     TRACE(c, "Processing preauth types: {patypes}", padata)
 #define TRACE_PREAUTH_OUTPUT(c, padata)                                 \
     TRACE(c, "Produced preauth for next request: {patypes}", padata)
-#define TRACE_PREAUTH_PROCESS(c, name, patype, flags, code)          \
-    TRACE(c, "Preauth module {str} ({int}) (flags={int}) returned: " \
-          "{kerr}", name, (int) patype, flags, code)
+#define TRACE_PREAUTH_PROCESS(c, name, patype, real, code)              \
+    TRACE(c, "Preauth module {str} ({int}) ({str}) returned: "          \
+          "{kerr}", name, (int) patype, real ? "real" : "info", code)
 #define TRACE_PREAUTH_SAM_KEY_GAK(c, keyblock)                  \
     TRACE(c, "AS key obtained for SAM: {keyblock}", keyblock)
 #define TRACE_PREAUTH_SALT(c, salt, patype)                          \
@@ -285,6 +301,8 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
 #define TRACE_RD_REQ_DECRYPT_SPECIFIC(c, princ, keyblock)               \
     TRACE(c, "Decrypted AP-REQ with specified server principal {princ}: " \
           "{keyblock}", princ, keyblock)
+#define TRACE_RD_REQ_DECRYPT_FAIL(c, err)                       \
+    TRACE(c, "Failed to decrypt AP-REQ ticket: {kerr}", err)
 #define TRACE_RD_REQ_NEGOTIATED_ETYPE(c, etype)                     \
     TRACE(c, "Negotiated enctype based on authenticator: {etype}",  \
           etype)
@@ -294,6 +312,9 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
     TRACE(c, "AP-REQ ticket: {princ} -> {princ}, session key {keyblock}", \
           client, server, keyblock)
 
+#define TRACE_SENDTO_KDC_ERROR_SET_MESSAGE(c, raddr, err)               \
+    TRACE(c, "Error preparing message to send to {raddr}: {errno}",     \
+          raddr, err)
 #define TRACE_SENDTO_KDC(c, len, rlm, master, tcp)                     \
     TRACE(c, "Sending request ({int} bytes) to {data}{str}{str}", len,  \
           rlm, (master) ? " (master)" : "", (tcp) ? " (tcp only)" : "")
@@ -301,32 +322,42 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
     TRACE(c, "Response was{str} from master KDC", (master) ? "" : " not")
 #define TRACE_SENDTO_KDC_RESOLVING(c, hostname)         \
     TRACE(c, "Resolving hostname {str}", hostname)
-#define TRACE_SENDTO_KDC_RESPONSE(c, conn)              \
-    TRACE(c, "Received answer from {connstate}", conn)
-#define TRACE_SENDTO_KDC_TCP_CONNECT(c, conn)                   \
-    TRACE(c, "Initiating TCP connection to {connstate}", conn)
-#define TRACE_SENDTO_KDC_TCP_DISCONNECT(c, conn)                \
-    TRACE(c, "Terminating TCP connection to {connstate}", conn)
-#define TRACE_SENDTO_KDC_TCP_ERROR_CONNECT(c, conn, err)                \
-    TRACE(c, "TCP error connecting to {connstate}: {errno}", conn, err)
-#define TRACE_SENDTO_KDC_TCP_ERROR_RECV(c, conn, err)                   \
-    TRACE(c, "TCP error receiving from {connstate}: {errno}", conn, err)
-#define TRACE_SENDTO_KDC_TCP_ERROR_RECV_LEN(c, conn, err)               \
-    TRACE(c, "TCP error receiving from {connstate}: {errno}", conn, err)
-#define TRACE_SENDTO_KDC_TCP_ERROR_SEND(c, conn, err)                   \
-    TRACE(c, "TCP error sending to {connstate}: {errno}", conn, err)
-#define TRACE_SENDTO_KDC_TCP_SEND(c, conn)                      \
-    TRACE(c, "Sending TCP request to {connstate}", conn)
-#define TRACE_SENDTO_KDC_UDP_ERROR_RECV(c, conn, err)                   \
-    TRACE(c, "UDP error receiving from {connstate}: {errno}", conn, err)
-#define TRACE_SENDTO_KDC_UDP_ERROR_SEND_INITIAL(c, conn, err)           \
-    TRACE(c, "UDP error sending to {connstate}: {errno}", conn, err)
-#define TRACE_SENDTO_KDC_UDP_ERROR_SEND_RETRY(c, conn, err)             \
-    TRACE(c, "UDP error sending to {connstate}: {errno}", conn, err)
-#define TRACE_SENDTO_KDC_UDP_SEND_INITIAL(c, conn)                      \
-    TRACE(c, "Sending initial UDP request to {connstate}", conn)
-#define TRACE_SENDTO_KDC_UDP_SEND_RETRY(c, conn)                \
-    TRACE(c, "Sending retry UDP request to {connstate}", conn)
+#define TRACE_SENDTO_KDC_RESPONSE(c, len, raddr)                        \
+    TRACE(c, "Received answer ({int} bytes) from {raddr}", len, raddr)
+#define TRACE_SENDTO_KDC_HTTPS_ERROR_CONNECT(c, raddr)          \
+    TRACE(c, "HTTPS error connecting to {raddr}", raddr)
+#define TRACE_SENDTO_KDC_HTTPS_ERROR_RECV(c, raddr)             \
+    TRACE(c, "HTTPS error receiving from {raddr}", raddr)
+#define TRACE_SENDTO_KDC_HTTPS_ERROR_SEND(c, raddr)     \
+    TRACE(c, "HTTPS error sending to {raddr}", raddr)
+#define TRACE_SENDTO_KDC_HTTPS_SEND(c, raddr)                           \
+    TRACE(c, "Sending HTTPS request to {raddr}", raddr)
+#define TRACE_SENDTO_KDC_HTTPS_ERROR(c, errs)                           \
+    TRACE(c, "HTTPS error: {str}", errs)
+#define TRACE_SENDTO_KDC_TCP_CONNECT(c, raddr)                  \
+    TRACE(c, "Initiating TCP connection to {raddr}", raddr)
+#define TRACE_SENDTO_KDC_TCP_DISCONNECT(c, raddr)               \
+    TRACE(c, "Terminating TCP connection to {raddr}", raddr)
+#define TRACE_SENDTO_KDC_TCP_ERROR_CONNECT(c, raddr, err)               \
+    TRACE(c, "TCP error connecting to {raddr}: {errno}", raddr, err)
+#define TRACE_SENDTO_KDC_TCP_ERROR_RECV(c, raddr, err)                  \
+    TRACE(c, "TCP error receiving from {raddr}: {errno}", raddr, err)
+#define TRACE_SENDTO_KDC_TCP_ERROR_RECV_LEN(c, raddr, err)              \
+    TRACE(c, "TCP error receiving from {raddr}: {errno}", raddr, err)
+#define TRACE_SENDTO_KDC_TCP_ERROR_SEND(c, raddr, err)                  \
+    TRACE(c, "TCP error sending to {raddr}: {errno}", raddr, err)
+#define TRACE_SENDTO_KDC_TCP_SEND(c, raddr)             \
+    TRACE(c, "Sending TCP request to {raddr}", raddr)
+#define TRACE_SENDTO_KDC_UDP_ERROR_RECV(c, raddr, err)                  \
+    TRACE(c, "UDP error receiving from {raddr}: {errno}", raddr, err)
+#define TRACE_SENDTO_KDC_UDP_ERROR_SEND_INITIAL(c, raddr, err)          \
+    TRACE(c, "UDP error sending to {raddr}: {errno}", raddr, err)
+#define TRACE_SENDTO_KDC_UDP_ERROR_SEND_RETRY(c, raddr, err)            \
+    TRACE(c, "UDP error sending to {raddr}: {errno}", raddr, err)
+#define TRACE_SENDTO_KDC_UDP_SEND_INITIAL(c, raddr)             \
+    TRACE(c, "Sending initial UDP request to {raddr}", raddr)
+#define TRACE_SENDTO_KDC_UDP_SEND_RETRY(c, raddr)               \
+    TRACE(c, "Sending retry UDP request to {raddr}", raddr)
 
 #define TRACE_SEND_TGS_ETYPES(c, etypes)                                \
     TRACE(c, "etypes requested in TGS request: {etypes}", etypes)
@@ -339,6 +370,19 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
 #define TRACE_TGS_REPLY_DECODE_SESSION(c, keyblock)                     \
     TRACE(c, "TGS reply didn't decode with subkey; trying session key " \
           "({keyblock)}", keyblock)
+
+#define TRACE_TLS_ERROR(c, errs)                \
+    TRACE(c, "TLS error: {str}", errs)
+#define TRACE_TLS_NO_REMOTE_CERTIFICATE(c)              \
+    TRACE(c, "TLS server certificate not received")
+#define TRACE_TLS_CERT_ERROR(c, depth, namelen, name, err, errs)        \
+    TRACE(c, "TLS certificate error at {int} ({lenstr}): {int} ({str})", \
+          depth, namelen, name, err, errs)
+#define TRACE_TLS_SERVER_NAME_MISMATCH(c, hostname)                     \
+    TRACE(c, "TLS certificate name mismatch: server certificate is "    \
+          "not for \"{str}\"", hostname)
+#define TRACE_TLS_SERVER_NAME_MATCH(c, hostname)                        \
+    TRACE(c, "TLS certificate name matched \"{str}\"", hostname)
 
 #define TRACE_TKT_CREDS(c, creds, cache)                            \
     TRACE(c, "Getting credentials {creds} using ccache {ccache}",   \
@@ -386,40 +430,10 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
 #define TRACE_TKT_CREDS_WRONG_ENCTYPE(c)                                \
     TRACE(c, "Retrying TGS request with desired service ticket enctypes")
 
-#define TRACE_GET_HOST_REALM(c, host) \
-    TRACE(c, "Get host realm for {str}", host)
-#define TRACE_GET_HOST_REALM_LOCALHOST(c, localhost) \
-    TRACE(c, "Use local host {str} to get host realm", localhost)
-#define TRACE_GET_HOST_REALM_DOMAIN_REALM_MAP(c, host) \
-    TRACE(c, "Look up {str} in the domain_realm map", host)
-#define TRACE_GET_HOST_REALM_TEMP_REALM(c, realm) \
-    TRACE(c, "Temporary realm is {str}", realm)
-#define TRACE_GET_HOST_REALM_RETURN(c, host, realm) \
-    TRACE(c, "Got realm {str} for host {str}", realm, host)
-
-#define TRACE_GET_FALLBACK_HOST_REALM(c, host) \
-    TRACE(c, "Get fallback host realm for {str}", host)
-#define TRACE_GET_FALLBACK_HOST_REALM_RETURN(c, host, realm) \
-    TRACE(c, "Got fallback realm {str} for host {str}", realm, host)
-
-#define TRACE_CLEAN_HOSTNAME(c, host, size, localhost) \
-    TRACE(c, "Clean host {str} with local host {lenstr}", \
-          host, size, localhost)
-#define TRACE_CLEAN_HOSTNAME_RETURN(c, host, size, localhost)  \
-    TRACE(c, "Cleaned host {str} to local host {lenstr}", \
-          host, size, localhost)
-
-#define TRACE_SNAME_TO_PRINCIPAL(c, host, sname, type) \
-    TRACE(c, "Convert service {str} ({ptype}) on host {str} to principal", \
-          sname, type, host)
-#define TRACE_SNAME_TO_PRINCIPAL_NOCANON(c, host) \
-    TRACE(c, "Failed to canonicalize {str}; using as-is", host)
-#define TRACE_SNAME_TO_PRINCIPAL_CANON(c, host) \
-    TRACE(c, "Remote host after forward canonicalization: {str}", host)
-#define TRACE_SNAME_TO_PRINCIPAL_RDNS(c, host) \
-    TRACE(c, "Remote host after reverse DNS processing: {str}", host)
-#define TRACE_SNAME_TO_PRINCIPAL_RETURN(c, princ) \
-    TRACE(c, "Got service principal {princ}", princ)
+#define TRACE_TXT_LOOKUP_NOTFOUND(c, host)              \
+    TRACE(c, "TXT record {str} not found", host)
+#define TRACE_TXT_LOOKUP_SUCCESS(c, host, realm)                \
+    TRACE(c, "TXT record {str} found: {str}", host, realm)
 
 #define TRACE_CHECK_REPLY_SERVER_DIFFERS(c, request, reply) \
     TRACE(c, "Reply server {princ} differs from requested {princ}", \

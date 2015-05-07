@@ -85,7 +85,7 @@
 #include <syslog.h>
 
 #include <assert.h>
-#include "../include/krb5/preauth_plugin.h"
+#include <krb5/kdcpreauth_plugin.h>
 
 typedef struct preauth_system_st {
     const char *name;
@@ -98,6 +98,7 @@ typedef struct preauth_system_st {
     krb5_kdcpreauth_verify_fn verify_padata;
     krb5_kdcpreauth_return_fn return_padata;
     krb5_kdcpreauth_free_modreq_fn free_modreq;
+    krb5_kdcpreauth_loop_fn loop;
 } preauth_system;
 
 static void
@@ -237,6 +238,8 @@ get_plugin_vtables(krb5_context context,
     /* Auto-register encrypted challenge and (if possible) pkinit. */
     k5_plugin_register_dyn(context, PLUGIN_INTERFACE_KDCPREAUTH, "pkinit",
                            "preauth");
+    k5_plugin_register_dyn(context, PLUGIN_INTERFACE_KDCPREAUTH, "otp",
+                           "preauth");
     k5_plugin_register(context, PLUGIN_INTERFACE_KDCPREAUTH,
                        "encrypted_challenge",
                        kdcpreauth_encrypted_challenge_initvt);
@@ -251,7 +254,7 @@ get_plugin_vtables(krb5_context context,
     if (vtables == NULL)
         goto cleanup;
     for (pl = plugins, n_tables = 0; *pl != NULL; pl++) {
-        if ((*pl)(context, 1, 1, (krb5_plugin_vtable)&vtables[n_tables]) == 0)
+        if ((*pl)(context, 1, 2, (krb5_plugin_vtable)&vtables[n_tables]) == 0)
             n_tables++;
     }
     for (i = 0, n_systems = 0; i < n_tables; i++) {
@@ -269,23 +272,24 @@ cleanup:
 /* Make a list of realm names.  The caller should free the list container but
  * not the list elements (which are aliases into kdc_realmlist). */
 static krb5_error_code
-get_realm_names(const char ***list_out)
+get_realm_names(struct server_handle *handle, const char ***list_out)
 {
     const char **list;
     int i;
 
-    list = calloc(kdc_numrealms + 1, sizeof(*list));
+    list = calloc(handle->kdc_numrealms + 1, sizeof(*list));
     if (list == NULL)
         return ENOMEM;
-    for (i = 0; i < kdc_numrealms; i++)
-        list[i] = kdc_realmlist[i]->realm_name;
+    for (i = 0; i < handle->kdc_numrealms; i++)
+        list[i] = handle->kdc_realmlist[i]->realm_name;
     list[i] = NULL;
     *list_out = list;
     return 0;
 }
 
 void
-load_preauth_plugins(krb5_context context)
+load_preauth_plugins(struct server_handle *handle, krb5_context context,
+                     verto_ctx *ctx)
 {
     krb5_error_code ret;
     struct krb5_kdcpreauth_vtable_st *vtables = NULL, *vt;
@@ -303,7 +307,7 @@ load_preauth_plugins(krb5_context context)
     if (preauth_systems == NULL)
         goto cleanup;
 
-    if (get_realm_names(&realm_names))
+    if (get_realm_names(handle, &realm_names))
         goto cleanup;
 
     /* Add the static system to the list first.  No static systems require
@@ -327,6 +331,20 @@ load_preauth_plugins(krb5_context context)
                 continue;
             }
         }
+
+        if (vt->loop) {
+            ret = vt->loop(context, moddata, ctx);
+            if (ret) {
+                emsg = krb5_get_error_message(context, ret);
+                krb5_klog_syslog(LOG_ERR, _("preauth %s failed to setup "
+                                            "loop: %s"), vt->name, emsg);
+                krb5_free_error_message(context, emsg);
+                if (vt->fini)
+                    vt->fini(context, moddata);
+                continue;
+            }
+        }
+
         /* Add this module to the systems list once for each pa type. */
         for (j = 0; vt->pa_type_list[j] > 0; j++) {
             sys = &preauth_systems[n_systems];
@@ -341,6 +359,7 @@ load_preauth_plugins(krb5_context context)
             sys->verify_padata = vt->verify;
             sys->return_padata = vt->return_padata;
             sys->free_modreq = vt->free_modreq;
+            sys->loop = vt->loop;
             n_systems++;
         }
     }
@@ -453,11 +472,10 @@ client_keys(krb5_context context, krb5_kdcpreauth_rock rock,
     krb5_key_data *entry_key;
     int i, k;
 
-    keys = malloc(sizeof(krb5_keyblock) * (request->nktypes + 1));
+    keys = calloc(request->nktypes + 1, sizeof(krb5_keyblock));
     if (keys == NULL)
         return ENOMEM;
 
-    memset(keys, 0, sizeof(krb5_keyblock) * (request->nktypes + 1));
     k = 0;
     for (i = 0; i < request->nktypes; i++) {
         entry_key = NULL;
@@ -526,8 +544,23 @@ event_context(krb5_context context, krb5_kdcpreauth_rock rock)
     return rock->vctx;
 }
 
+static krb5_boolean
+have_client_keys(krb5_context context, krb5_kdcpreauth_rock rock)
+{
+    krb5_kdc_req *request = rock->request;
+    krb5_key_data *kd;
+    int i;
+
+    for (i = 0; i < request->nktypes; i++) {
+        if (krb5_dbe_find_enctype(context, rock->client, request->ktype[i],
+                                  -1, 0, &kd) == 0)
+            return TRUE;
+    }
+    return FALSE;
+}
+
 static struct krb5_kdcpreauth_callbacks_st callbacks = {
-    1,
+    2,
     max_time_skew,
     client_keys,
     free_keys,
@@ -536,7 +569,8 @@ static struct krb5_kdcpreauth_callbacks_st callbacks = {
     get_string,
     free_string,
     client_entry,
-    event_context
+    event_context,
+    have_client_keys
 };
 
 static krb5_error_code
@@ -718,6 +752,7 @@ hint_list_finish(struct hint_state *state, krb5_error_code code)
 {
     kdc_hint_respond_fn oldrespond = state->respond;
     void *oldarg = state->arg;
+    kdc_realm_t *kdc_active_realm = state->realm;
 
     if (!code) {
         if (state->pa_data[0] == 0) {
@@ -746,7 +781,6 @@ finish_get_edata(void *arg, krb5_error_code code, krb5_pa_data *pa)
 {
     struct hint_state *state = arg;
 
-    kdc_active_realm = state->realm;
     if (code == 0) {
         if (pa == NULL) {
             /* Include an empty value of the current type. */
@@ -765,6 +799,7 @@ static void
 hint_list_next(struct hint_state *state)
 {
     preauth_system *ap = state->ap;
+    kdc_realm_t *kdc_active_realm = state->realm;
 
     if (ap->type == -1) {
         hint_list_finish(state, 0);
@@ -810,7 +845,7 @@ get_preauth_hint_list(krb5_kdc_req *request, krb5_kdcpreauth_rock rock,
     state->arg = arg;
     state->request = request;
     state->rock = rock;
-    state->realm = kdc_active_realm;
+    state->realm = rock->rstate->realm_data;
     state->e_data_out = e_data_out;
 
     /* Allocate two extra entries for the cookie and the terminator. */
@@ -986,7 +1021,6 @@ finish_verify_padata(void *arg, krb5_error_code code,
     krb5_boolean typed_e_data_flag;
 
     assert(state);
-    kdc_active_realm = state->realm; /* Restore the realm. */
     *state->modreq_ptr = modreq;
 
     if (code) {
@@ -1135,7 +1169,7 @@ check_padata(krb5_context context, krb5_kdcpreauth_rock rock,
     state->padata_context = padata_context;
     state->e_data_out = e_data;
     state->typed_e_data_out = typed_e_data;
-    state->realm = kdc_active_realm;
+    state->realm = rock->rstate->realm_data;
 
 #ifdef DEBUG
     krb5_klog_syslog (LOG_DEBUG, "checking padata");
@@ -1333,7 +1367,7 @@ etype_info_helper(krb5_context context, krb5_kdc_req *request,
     int i = 0, start = 0, seen_des = 0;
     int etype_info2 = (pa_type == KRB5_PADATA_ETYPE_INFO2);
 
-    entry = k5alloc((client->n_key_data * 2 + 1) * sizeof(*entry), &retval);
+    entry = k5calloc(client->n_key_data * 2 + 1, sizeof(*entry), &retval);
     if (entry == NULL)
         goto cleanup;
     entry[0] = NULL;
@@ -1388,6 +1422,11 @@ etype_info_helper(krb5_context context, krb5_kdc_req *request,
             seen_des++;
         }
     }
+
+    /* If the list is empty, don't send it at all. */
+    if (i == 0)
+        goto cleanup;
+
     if (etype_info2)
         retval = encode_krb5_etype_info2(entry, &scratch);
     else
@@ -1451,6 +1490,9 @@ etype_info_as_rep_helper(krb5_context context, krb5_pa_data * padata,
     krb5_pa_data *tmp_padata;
     krb5_etype_info_entry **entry = NULL;
     krb5_data *scratch = NULL;
+
+    if (client_key == NULL)
+        return 0;
 
     /*
      * Skip PA-ETYPE-INFO completely if AS-REQ lists any "newer"
@@ -1555,6 +1597,9 @@ return_pw_salt(krb5_context context, krb5_pa_data *in_padata,
     krb5_key_data *     client_key = rock->client_key;
     int i;
 
+    if (client_key == NULL)
+        return 0;
+
     for (i = 0; i < request->nktypes; i++) {
         if (enctype_requires_etype_info_2(request->ktype[i]))
             return 0;
@@ -1570,12 +1615,10 @@ return_pw_salt(krb5_context context, krb5_pa_data *in_padata,
     padata->magic = KV5M_PA_DATA;
 
     if (salttype == KRB5_KDB_SALTTYPE_AFS3) {
-        padata->contents = k5alloc(salt->length + 1, &retval);
+        padata->contents = k5memdup0(salt->data, salt->length, &retval);
         if (padata->contents == NULL)
             goto cleanup;
-        memcpy(padata->contents, salt->data, salt->length);
         padata->pa_type = KRB5_PADATA_AFS3_SALT;
-        padata->contents[salt->length] = '\0';
         padata->length = salt->length + 1;
     } else {
         padata->pa_type = KRB5_PADATA_PW_SALT;
@@ -1663,7 +1706,7 @@ return_enc_padata(krb5_context context, krb5_data *req_pkt,
         if (code)
             return code;
     }
-    code = kdc_handle_protected_negotiation(req_pkt, request, reply_key,
+    code = kdc_handle_protected_negotiation(context, req_pkt, request, reply_key,
                                             &reply_encpart->enc_padata);
     if (code)
         goto cleanup;

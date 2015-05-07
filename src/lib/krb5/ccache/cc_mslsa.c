@@ -172,37 +172,6 @@ is_windows_vista (void)
     return fIsVista;
 }
 
-static BOOL
-is_process_uac_limited (void)
-{
-    static BOOL fChecked = FALSE;
-    static BOOL fIsUAC = FALSE;
-
-    if (!fChecked)
-    {
-        NTSTATUS Status = 0;
-        HANDLE  TokenHandle;
-        DWORD   ElevationLevel;
-        DWORD   ReqLen;
-        BOOL    Success;
-
-        if (is_windows_vista()) {
-            Success = OpenProcessToken( GetCurrentProcess(), TOKEN_QUERY, &TokenHandle );
-            if ( Success ) {
-                Success = GetTokenInformation( TokenHandle,
-                                               TokenOrigin+1 /* ElevationLevel */,
-                                               &ElevationLevel, sizeof(DWORD), &ReqLen );
-                CloseHandle( TokenHandle );
-                if ( Success && ElevationLevel == 3 /* Limited */ )
-                    fIsUAC = TRUE;
-            }
-        }
-        fChecked = TRUE;
-    }
-    return fIsUAC;
-
-}
-
 typedef BOOL (WINAPI *LPFN_ISWOW64PROCESS) (HANDLE, PBOOL);
 
 static BOOL
@@ -445,9 +414,6 @@ IsMSSessionKeyNull(KERB_CRYPTO_KEY *mskey)
 {
     DWORD i;
 
-    if (is_process_uac_limited())
-        return TRUE;
-
     if (mskey->KeyType == KERB_ETYPE_NULL)
         return TRUE;
 
@@ -689,7 +655,8 @@ does_retrieve_ticket_cache_ticket (void)
         LsaDeregisterLogonProcess(LogonHandle);
 
         if (FAILED(Status) || FAILED(SubStatus)) {
-            if ( SubStatus == STATUS_NOT_SUPPORTED )
+            if (SubStatus == STATUS_NOT_SUPPORTED ||
+                SubStatus == SEC_E_NO_CREDENTIALS)
                 /* The combination of the two CacheOption flags
                  * is not supported; therefore, the new flag is supported
                  */
@@ -1240,7 +1207,7 @@ krb5_is_permitted_tgs_enctype(krb5_context context, krb5_const_principal princ, 
         if (*ptr == etype)
             ret = 1;
 
-    krb5_free_ktypes (context, list);
+    krb5_free_enctypes(context, list);
 
     return(ret);
 }
@@ -1252,6 +1219,10 @@ krb5_is_permitted_tgs_enctype(krb5_context context, krb5_const_principal princ, 
 // tickets.  This is safe to do because the LSA purges its cache when it
 // retrieves a new TGT (ms calls this renew) but not when it renews the TGT
 // (ms calls this refresh).
+// UAC-limited processes are not allowed to obtain a copy of the MSTGT
+// session key.  We used to check for UAC-limited processes and refuse all
+// access to the TGT, but this makes the MSLSA ccache completely unusable.
+// Instead we ought to just flag that the tgt session key is not valid.
 
 static BOOL
 GetMSTGT(krb5_context context, HANDLE LogonHandle, ULONG PackageId, KERB_EXTERNAL_TICKET **ticket, BOOL enforce_tgs_enctypes)
@@ -1278,11 +1249,6 @@ GetMSTGT(krb5_context context, HANDLE LogonHandle, ULONG PackageId, KERB_EXTERNA
 #endif /* ENABLE_PURGING */
     int    ignore_cache = 0;
     krb5_enctype *etype_list = NULL, *ptr = NULL, etype = 0;
-
-    if (is_process_uac_limited()) {
-        Status = STATUS_ACCESS_DENIED;
-        goto cleanup;
-    }
 
     memset(&CacheRequest, 0, sizeof(KERB_QUERY_TKT_CACHE_REQUEST));
     CacheRequest.MessageType = KerbRetrieveTicketMessage;
@@ -1536,7 +1502,7 @@ GetMSTGT(krb5_context context, HANDLE LogonHandle, ULONG PackageId, KERB_EXTERNA
 
 cleanup:
     if ( etype_list )
-        krb5_free_ktypes(context, etype_list);
+        krb5_free_enctypes(context, etype_list);
 
     if ( pTicketRequest )
         LocalFree(pTicketRequest);
@@ -2522,8 +2488,10 @@ krb5_lcc_retrieve(krb5_context context, krb5_ccache id, krb5_flags whichfields,
     memset(&fetchcreds, 0, sizeof(krb5_creds));
 
     /* first try to find out if we have an existing ticket which meets the requirements */
-    kret = krb5_cc_retrieve_cred_default (context, id, whichfields, mcreds, creds);
-    if ( !kret )
+    kret = k5_cc_retrieve_cred_default(context, id, whichfields, mcreds,
+                                       creds);
+    /* This sometimes returns a zero-length ticket; work around it. */
+    if ( !kret && creds->ticket.length > 0 )
         return KRB5_OK;
 
     /* if not, we must try to get a ticket without specifying any flags or etypes */
@@ -2539,8 +2507,10 @@ krb5_lcc_retrieve(krb5_context context, krb5_ccache id, krb5_flags whichfields,
     }
 
     /* try again to find out if we have an existing ticket which meets the requirements */
-    kret = krb5_cc_retrieve_cred_default (context, id, whichfields, mcreds, creds);
-    if ( !kret )
+    kret = k5_cc_retrieve_cred_default(context, id, whichfields, mcreds,
+                                       creds);
+    /* This sometimes returns a zero-length ticket; work around it. */
+    if ( !kret && creds->ticket.length > 0 )
         goto cleanup;
 
     /* if not, obtain a ticket using the request flags and enctype even though it may not
@@ -2602,7 +2572,7 @@ krb5_lcc_retrieve(krb5_context context, krb5_ccache id, krb5_flags whichfields,
 
 
     /* check to see if this ticket matches the request using logic from
-     * krb5_cc_retrieve_cred_default()
+     * k5_cc_retrieve_cred_default()
      */
     if ( krb5int_cc_creds_match_request(context, whichfields, mcreds, &fetchcreds) ) {
         *creds = fetchcreds;
@@ -2738,10 +2708,6 @@ krb5_lcc_get_flags(krb5_context context, krb5_ccache id, krb5_flags *flags)
     return KRB5_OK;
 }
 
-struct krb5int_lcc_iterator {
-    int id;
-};
-
 static krb5_error_code KRB5_CALLCONV
 krb5_lcc_ptcursor_new(krb5_context context, krb5_cc_ptcursor *cursor)
 {
@@ -2784,12 +2750,6 @@ krb5_lcc_ptcursor_free(krb5_context context, krb5_cc_ptcursor *cursor)
     return 0;
 }
 
-static krb5_error_code KRB5_CALLCONV
-krb5_lcc_switch_to(krb5_context context, krb5_ccache id)
-{
-    return 0;
-}
-
 const krb5_cc_ops krb5_lcc_ops = {
     0,
     "MSLSA",
@@ -2816,6 +2776,6 @@ const krb5_cc_ops krb5_lcc_ops = {
     NULL, /* wasdefault */
     NULL, /* lock */
     NULL, /* unlock */
-    krb5_lcc_switch_to,
+    NULL, /* switch_to */
 };
 #endif /* _WIN32 */

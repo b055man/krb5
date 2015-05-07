@@ -29,11 +29,6 @@
  * SUCH DAMAGES.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <string.h>
-
 #include <k5-int.h>
 #include "pkinit.h"
 
@@ -461,9 +456,9 @@ pkinit_server_verify_padata(krb5_context context,
             goto cleanup;
         }
         if (cksum.length != auth_pack->pkAuthenticator.paChecksum.length ||
-            memcmp(cksum.contents,
-                   auth_pack->pkAuthenticator.paChecksum.contents,
-                   cksum.length)) {
+            k5_bcmp(cksum.contents,
+                    auth_pack->pkAuthenticator.paChecksum.contents,
+                    cksum.length) != 0) {
             pkiDebug("failed to match the checksum\n");
 #ifdef DEBUG_CKSUM
             pkiDebug("calculating checksum on buf size (%d)\n",
@@ -639,11 +634,11 @@ pkinit_pick_kdf_alg(krb5_context context, krb5_data **kdf_list,
                 tmp_oid = k5alloc(sizeof(krb5_data), &retval);
                 if (retval)
                     goto cleanup;
-                tmp_oid->data = k5alloc(supp_oid->length, &retval);
+                tmp_oid->data = k5memdup(supp_oid->data, supp_oid->length,
+                                         &retval);
                 if (retval)
                     goto cleanup;
                 tmp_oid->length = supp_oid->length;
-                memcpy(tmp_oid->data, supp_oid->data, tmp_oid->length);
                 *alg_oid = tmp_oid;
                 /* don't free the OID in clean-up if we are returning it */
                 tmp_oid = NULL;
@@ -863,13 +858,14 @@ pkinit_server_return_padata(krb5_context context,
             goto cleanup;
         }
 
-        /* check if PA_TYPE of 132 is present which means the client is
-         * requesting that a checksum is send back instead of the nonce
+        /* check if PA_TYPE of KRB5_PADATA_AS_CHECKSUM (132) is present which
+         * means the client is requesting that a checksum is send back instead
+         * of the nonce.
          */
         for (i = 0; request->padata[i] != NULL; i++) {
             pkiDebug("%s: Checking pa_type 0x%08x\n",
                      __FUNCTION__, request->padata[i]->pa_type);
-            if (request->padata[i]->pa_type == 132)
+            if (request->padata[i]->pa_type == KRB5_PADATA_AS_CHECKSUM)
                 fixed_keypack = 1;
         }
         pkiDebug("%s: return checksum instead of nonce = %d\n",
@@ -1026,8 +1022,9 @@ pkinit_server_return_padata(krb5_context context,
          rep9->choice == choice_pa_pk_as_rep_draft9_dhSignedData) ||
         (rep != NULL && rep->choice == choice_pa_pk_as_rep_dhInfo)) {
 
-        /* If mutually supported KDFs were found, use the alg agility KDF */
-        if (rep->u.dh_Info.kdfID) {
+	/* If we're not doing draft 9, and mutually supported KDFs were found,
+	 * use the algorithm agility KDF. */
+        if (rep != NULL && rep->u.dh_Info.kdfID) {
             secret.data = (char *)server_key;
             secret.length = server_key_len;
 
@@ -1175,18 +1172,15 @@ pkinit_init_kdc_profile(krb5_context context, pkinit_kdc_context plgctx)
                              KRB5_CONF_PKINIT_KDC_OCSP,
                              &plgctx->idopts->ocsp);
 
-    pkinit_kdcdefault_string(context, plgctx->realmname,
-                             KRB5_CONF_PKINIT_MAPPING_FILE,
-                             &plgctx->idopts->dn_mapping_file);
-
     pkinit_kdcdefault_integer(context, plgctx->realmname,
                               KRB5_CONF_PKINIT_DH_MIN_BITS,
                               PKINIT_DEFAULT_DH_MIN_BITS,
                               &plgctx->opts->dh_min_bits);
-    if (plgctx->opts->dh_min_bits < PKINIT_DEFAULT_DH_MIN_BITS) {
-        pkiDebug("%s: invalid value (%d) for pkinit_dh_min_bits, "
+    if (plgctx->opts->dh_min_bits < PKINIT_DH_MIN_CONFIG_BITS) {
+        pkiDebug("%s: invalid value (%d < %d) for pkinit_dh_min_bits, "
                  "using default value (%d) instead\n", __FUNCTION__,
-                 plgctx->opts->dh_min_bits, PKINIT_DEFAULT_DH_MIN_BITS);
+                 plgctx->opts->dh_min_bits, PKINIT_DH_MIN_CONFIG_BITS,
+                 PKINIT_DEFAULT_DH_MIN_BITS);
         plgctx->opts->dh_min_bits = PKINIT_DEFAULT_DH_MIN_BITS;
     }
 
@@ -1295,7 +1289,13 @@ pkinit_server_plugin_init_realm(krb5_context context, const char *realmname,
         goto errout;
 
     retval = pkinit_identity_initialize(context, plgctx->cryptoctx, NULL,
-                                        plgctx->idopts, plgctx->idctx, 0, NULL);
+                                        plgctx->idopts, plgctx->idctx,
+                                        NULL, NULL, NULL);
+    if (retval)
+        goto errout;
+    retval = pkinit_identity_prompt(context, plgctx->cryptoctx, NULL,
+                                    plgctx->idopts, plgctx->idctx,
+                                    NULL, NULL, 0, NULL);
     if (retval)
         goto errout;
 
@@ -1389,7 +1389,7 @@ pkinit_server_plugin_fini(krb5_context context,
     for (i = 0; realm_contexts[i] != NULL; i++) {
         pkinit_server_plugin_fini_realm(context, realm_contexts[i]);
     }
-    pkiDebug("%s: freeing   context at %p\n", __FUNCTION__, realm_contexts);
+    pkiDebug("%s: freeing context at %p\n", __FUNCTION__, realm_contexts);
     free(realm_contexts);
 }
 
@@ -1430,7 +1430,7 @@ pkinit_fini_kdc_req_context(krb5_context context, void *ctx)
         pkiDebug("pkinit_fini_kdc_req_context: got bad reqctx (%p)!\n", reqctx);
         return;
     }
-    pkiDebug("%s: freeing   reqctx at %p\n", __FUNCTION__, reqctx);
+    pkiDebug("%s: freeing reqctx at %p\n", __FUNCTION__, reqctx);
 
     pkinit_fini_req_crypto(reqctx->cryptoctx);
     if (reqctx->rcv_auth_pack != NULL)

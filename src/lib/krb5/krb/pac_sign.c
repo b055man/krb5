@@ -40,7 +40,7 @@ k5_insert_client_info(krb5_context context,
     char *princ_name_utf8 = NULL;
     unsigned char *princ_name_ucs2 = NULL, *p;
     size_t princ_name_ucs2_len = 0;
-    krb5_ui_8 nt_authtime;
+    uint64_t nt_authtime;
 
     /* If we already have a CLIENT_INFO buffer, then just validate it */
     if (k5_pac_locate_buffer(context, pac, KRB5_PAC_CLIENT_INFO,
@@ -257,13 +257,11 @@ krb5_pac_sign(krb5_context context, krb5_pac pac, krb5_timestamp authtime,
     if (ret != 0)
         return ret;
 
-    data->data = malloc(pac->data.length);
+    data->data = k5memdup(pac->data.data, pac->data.length, &ret);
     if (data->data == NULL)
-        return ENOMEM;
-
+        return ret;
     data->length = pac->data.length;
 
-    memcpy(data->data, pac->data.data, pac->data.length);
     memset(pac->data.data, 0,
            PACTYPE_LENGTH + (pac->pac->cBuffers * PAC_INFO_BUFFER_LENGTH));
 

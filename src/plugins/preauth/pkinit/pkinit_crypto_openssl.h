@@ -31,6 +31,8 @@
 #ifndef _PKINIT_CRYPTO_OPENSSL_H
 #define _PKINIT_CRYPTO_OPENSSL_H
 
+#include "pkinit.h"
+
 #include <openssl/bn.h>
 #include <openssl/dh.h>
 #include <openssl/x509.h>
@@ -45,12 +47,11 @@
 #include <openssl/asn1.h>
 #include <openssl/pem.h>
 
-#include "pkinit.h"
-
 #define DN_BUF_LEN  256
 #define MAX_CREDS_ALLOWED 20
 
 struct _pkinit_cred_info {
+    char *name;
     X509 *cert;
     EVP_PKEY *key;
 #ifndef WITHOUT_PKCS11
@@ -63,6 +64,7 @@ typedef struct _pkinit_cred_info * pkinit_cred_info;
 struct _pkinit_identity_crypto_context {
     pkinit_cred_info creds[MAX_CREDS_ALLOWED+1];
     STACK_OF(X509) *my_certs;   /* available user certs */
+    char *identity;             /* identity name for user cert */
     int cert_index;             /* cert to use out of available certs*/
     EVP_PKEY *my_key;           /* available user keys if in filesystem */
     STACK_OF(X509) *trustedCAs; /* available trusted ca certs */
@@ -84,6 +86,8 @@ struct _pkinit_identity_crypto_context {
     int cert_id_len;
     CK_MECHANISM_TYPE mech;
 #endif
+    krb5_boolean defer_id_prompt;
+    pkinit_deferred_id *deferred_ids;
 };
 
 struct _pkinit_plg_crypto_context {
@@ -91,7 +95,6 @@ struct _pkinit_plg_crypto_context {
     DH *dh_2048;
     DH *dh_4096;
     ASN1_OBJECT *id_pkinit_authData;
-    ASN1_OBJECT *id_pkinit_authData9;
     ASN1_OBJECT *id_pkinit_DHKeyData;
     ASN1_OBJECT *id_pkinit_rkeyData;
     ASN1_OBJECT *id_pkinit_san;

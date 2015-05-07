@@ -29,30 +29,13 @@
  * SUCH DAMAGES.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <errno.h>
+#include "k5-int.h"
+#include "pkinit.h"
+#include "k5-json.h"
+
 #include <unistd.h>
-#include <string.h>
-#include <ctype.h>
-#include <assert.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
-
-#include "pkinit.h"
-
-/*
- * It is anticipated that all the special checks currently
- * required when talking to a Longhorn server will go away
- * by the time it is officially released and all references
- * to the longhorn global can be removed and any code
- * #ifdef'd with LONGHORN_BETA_COMPAT can be removed.
- *
- * Current testing (20070620) is against a patched Beta 3
- * version of Longhorn.  Most, if not all, problems should
- * be fixed in SP1 of Longhorn.
- */
-int longhorn = 0;       /* Talking to a Longhorn server? */
 
 /**
  * Return true if we should use ContentInfo rather than SignedData. This
@@ -109,7 +92,7 @@ pa_pkinit_gen_req(krb5_context context,
     krb5_data *der_req = NULL;
     krb5_pa_data **return_pa_data = NULL;
 
-    cksum.contents = NULL;
+    memset(&cksum, 0, sizeof(cksum));
     reqctx->pa_type = pa_type;
 
     pkiDebug("kdc_options = 0x%x  till = %d\n",
@@ -157,29 +140,22 @@ pa_pkinit_gen_req(krb5_context context,
 
     retval = pkinit_as_req_create(context, plgctx, reqctx, ctsec, cusec,
                                   nonce, &cksum, request->client, request->server, &out_data);
-    if (retval || !out_data->length) {
+    if (retval) {
         pkiDebug("error %d on pkinit_as_req_create; aborting PKINIT\n",
                  (int) retval);
         goto cleanup;
     }
-    retval = ENOMEM;
+
     /*
      * The most we'll return is two pa_data, normally just one.
      * We need to make room for the NULL terminator.
      */
-    return_pa_data = malloc(3 * sizeof(krb5_pa_data *));
+    return_pa_data = k5calloc(3, sizeof(*return_pa_data), &retval);
     if (return_pa_data == NULL)
         goto cleanup;
 
-    return_pa_data[1] = NULL;   /* in case of an early trip to cleanup */
-    return_pa_data[2] = NULL;   /* Terminate the list */
-
-    return_pa_data[0] = malloc(sizeof(krb5_pa_data));
+    return_pa_data[0] = k5alloc(sizeof(*return_pa_data[0]), &retval);
     if (return_pa_data[0] == NULL)
-        goto cleanup;
-
-    return_pa_data[1] = malloc(sizeof(krb5_pa_data));
-    if (return_pa_data[1] == NULL)
         goto cleanup;
 
     return_pa_data[0]->magic = KV5M_PA_DATA;
@@ -190,40 +166,23 @@ pa_pkinit_gen_req(krb5_context context,
         return_pa_data[0]->pa_type = pa_type;
     return_pa_data[0]->length = out_data->length;
     return_pa_data[0]->contents = (krb5_octet *) out_data->data;
+    *out_data = empty_data();
 
-    /*
-     * LH Beta 3 requires the extra pa-data, even for RFC requests,
-     * in order to get the Checksum rather than a Nonce in the reply.
-     * This can be removed when LH SP1 is released.
-     */
-    if ((return_pa_data[0]->pa_type == KRB5_PADATA_PK_AS_REP_OLD
-         && reqctx->opts->win2k_require_cksum) || (longhorn == 1)) {
-        return_pa_data[1]->pa_type = 132;
-        return_pa_data[1]->length = 0;
-        return_pa_data[1]->contents = NULL;
-    } else {
-        free(return_pa_data[1]);
-        return_pa_data[1] = NULL;   /* Move the list terminator */
+    if (return_pa_data[0]->pa_type == KRB5_PADATA_PK_AS_REP_OLD) {
+        return_pa_data[1] = k5alloc(sizeof(*return_pa_data[1]), &retval);
+        if (return_pa_data[1] == NULL)
+            goto cleanup;
+        return_pa_data[1]->pa_type = KRB5_PADATA_AS_CHECKSUM;
     }
+
     *out_padata = return_pa_data;
-    retval = 0;
+    return_pa_data = NULL;
 
 cleanup:
-    if (der_req != NULL)
-        krb5_free_data(context, der_req);
-    free(out_data);
-
-    if (retval) {
-        if (return_pa_data) {
-            free(return_pa_data[0]);
-            free(return_pa_data[1]);
-            free(return_pa_data);
-        }
-        if (out_data) {
-            free(out_data->data);
-            free(out_data);
-        }
-    }
+    krb5_free_data(context, der_req);
+    krb5_free_checksum_contents(context, &cksum);
+    krb5_free_data(context, out_data);
+    krb5_free_pa_data(context, return_pa_data);
     return retval;
 }
 
@@ -240,13 +199,16 @@ pkinit_as_req_create(krb5_context context,
                      krb5_data ** as_req)
 {
     krb5_error_code retval = ENOMEM;
-    krb5_subject_pk_info *info = NULL;
+    krb5_subject_pk_info info;
     krb5_data *coded_auth_pack = NULL;
-    krb5_auth_pack *auth_pack = NULL;
+    krb5_auth_pack auth_pack;
     krb5_pa_pk_as_req *req = NULL;
-    krb5_auth_pack_draft9 *auth_pack9 = NULL;
+    krb5_auth_pack_draft9 auth_pack9;
     krb5_pa_pk_as_req_draft9 *req9 = NULL;
+    krb5_algorithm_identifier **cmstypes = NULL;
     int protocol = reqctx->opts->dh_or_rsa;
+    unsigned char *dh_params = NULL, *dh_pubkey = NULL;
+    unsigned int dh_params_len, dh_pubkey_len;
 
     pkiDebug("pkinit_as_req_create pa_type = %d\n", reqctx->pa_type);
 
@@ -254,34 +216,28 @@ pkinit_as_req_create(krb5_context context,
     switch((int)reqctx->pa_type) {
     case KRB5_PADATA_PK_AS_REQ_OLD:
         protocol = RSA_PROTOCOL;
-        init_krb5_auth_pack_draft9(&auth_pack9);
-        if (auth_pack9 == NULL)
-            goto cleanup;
-        auth_pack9->pkAuthenticator.ctime = ctsec;
-        auth_pack9->pkAuthenticator.cusec = cusec;
-        auth_pack9->pkAuthenticator.nonce = nonce;
-        auth_pack9->pkAuthenticator.kdcName = server;
-        free(cksum->contents);
+        memset(&auth_pack9, 0, sizeof(auth_pack9));
+        auth_pack9.pkAuthenticator.ctime = ctsec;
+        auth_pack9.pkAuthenticator.cusec = cusec;
+        auth_pack9.pkAuthenticator.nonce = nonce;
+        auth_pack9.pkAuthenticator.kdcName = server;
         break;
     case KRB5_PADATA_PK_AS_REQ:
-        init_krb5_subject_pk_info(&info);
-        if (info == NULL)
-            goto cleanup;
-        init_krb5_auth_pack(&auth_pack);
-        if (auth_pack == NULL)
-            goto cleanup;
-        auth_pack->pkAuthenticator.ctime = ctsec;
-        auth_pack->pkAuthenticator.cusec = cusec;
-        auth_pack->pkAuthenticator.nonce = nonce;
-        auth_pack->pkAuthenticator.paChecksum = *cksum;
-        auth_pack->clientDHNonce.length = 0;
-        auth_pack->clientPublicValue = info;
-        auth_pack->supportedKDFs = (krb5_data **) supported_kdf_alg_ids;
+        memset(&info, 0, sizeof(info));
+        memset(&auth_pack, 0, sizeof(auth_pack));
+        auth_pack.pkAuthenticator.ctime = ctsec;
+        auth_pack.pkAuthenticator.cusec = cusec;
+        auth_pack.pkAuthenticator.nonce = nonce;
+        auth_pack.pkAuthenticator.paChecksum = *cksum;
+        auth_pack.clientDHNonce.length = 0;
+        auth_pack.clientPublicValue = &info;
+        auth_pack.supportedKDFs = (krb5_data **)supported_kdf_alg_ids;
 
         /* add List of CMS algorithms */
         retval = create_krb5_supportedCMSTypes(context, plgctx->cryptoctx,
-                                               reqctx->cryptoctx, reqctx->idctx,
-                                               &auth_pack->supportedCMSTypes);
+                                               reqctx->cryptoctx,
+                                               reqctx->idctx, &cmstypes);
+        auth_pack.supportedCMSTypes = cmstypes;
         if (retval)
             goto cleanup;
         break;
@@ -296,35 +252,29 @@ pkinit_as_req_create(krb5_context context,
     case DH_PROTOCOL:
         TRACE_PKINIT_CLIENT_REQ_DH(context);
         pkiDebug("as_req: DH key transport algorithm\n");
-        retval = pkinit_copy_krb5_data(&info->algorithm.algorithm, &dh_oid);
-        if (retval) {
-            pkiDebug("failed to copy dh_oid\n");
-            goto cleanup;
-        }
+        info.algorithm.algorithm = dh_oid;
 
         /* create client-side DH keys */
-        if ((retval = client_create_dh(context, plgctx->cryptoctx,
-                                       reqctx->cryptoctx, reqctx->idctx, reqctx->opts->dh_size,
-                                       (unsigned char **)
-                                       &info->algorithm.parameters.data,
-                                       &info->algorithm.parameters.length,
-                                       (unsigned char **)
-                                       &info->subjectPublicKey.data,
-                                       &info->subjectPublicKey.length)) != 0) {
+        retval = client_create_dh(context, plgctx->cryptoctx,
+                                  reqctx->cryptoctx, reqctx->idctx,
+                                  reqctx->opts->dh_size, &dh_params,
+                                  &dh_params_len, &dh_pubkey, &dh_pubkey_len);
+        if (retval != 0) {
             pkiDebug("failed to create dh parameters\n");
             goto cleanup;
         }
+        info.algorithm.parameters = make_data(dh_params, dh_params_len);
+        info.subjectPublicKey = make_data(dh_pubkey, dh_pubkey_len);
         break;
     case RSA_PROTOCOL:
         TRACE_PKINIT_CLIENT_REQ_RSA(context);
         pkiDebug("as_req: RSA key transport algorithm\n");
         switch((int)reqctx->pa_type) {
         case KRB5_PADATA_PK_AS_REQ_OLD:
-            auth_pack9->clientPublicValue = NULL;
+            auth_pack9.clientPublicValue = NULL;
             break;
         case KRB5_PADATA_PK_AS_REQ:
-            free_krb5_subject_pk_info(&info);
-            auth_pack->clientPublicValue = NULL;
+            auth_pack.clientPublicValue = NULL;
             break;
         }
         break;
@@ -338,10 +288,10 @@ pkinit_as_req_create(krb5_context context,
     /* Encode the authpack */
     switch((int)reqctx->pa_type) {
     case KRB5_PADATA_PK_AS_REQ:
-        retval = k5int_encode_krb5_auth_pack(auth_pack, &coded_auth_pack);
+        retval = k5int_encode_krb5_auth_pack(&auth_pack, &coded_auth_pack);
         break;
     case KRB5_PADATA_PK_AS_REQ_OLD:
-        retval = k5int_encode_krb5_auth_pack_draft9(auth_pack9,
+        retval = k5int_encode_krb5_auth_pack_draft9(&auth_pack9,
                                                     &coded_auth_pack);
         break;
     }
@@ -451,12 +401,11 @@ pkinit_as_req_create(krb5_context context,
 #endif
 
 cleanup:
-    if (auth_pack != NULL)
-        auth_pack->supportedKDFs = NULL; /*alias to global constant*/
-    free_krb5_auth_pack(&auth_pack);
+    free_krb5_algorithm_identifiers(&cmstypes);
+    free(dh_params);
+    free(dh_pubkey);
     free_krb5_pa_pk_as_req(&req);
     free_krb5_pa_pk_as_req_draft9(&req9);
-    free(auth_pack9);
 
     pkiDebug("pkinit_as_req_create retval=%d\n", (int) retval);
 
@@ -596,7 +545,7 @@ verify_kdc_san(krb5_context context,
         for (j = 0; cfghosts != NULL && cfghosts[j] != NULL; j++) {
             pkiDebug("%s: comparing cert name '%s' with config name '%s'\n",
                      __FUNCTION__, certhosts[i], cfghosts[j]);
-            if (strcmp(certhosts[i], cfghosts[j]) == 0) {
+            if (strcasecmp(certhosts[i], cfghosts[j]) == 0) {
                 TRACE_PKINIT_CLIENT_SAN_MATCH_DNSNAME(context, certhosts[i]);
                 pkiDebug("%s: we have a dnsName match\n", __FUNCTION__);
                 *valid_san = 1;
@@ -689,7 +638,6 @@ pkinit_as_rep_parse(krb5_context context,
     krb5_pa_pk_as_rep *kdc_reply = NULL;
     krb5_kdc_dh_key_info *kdc_dh = NULL;
     krb5_reply_key_pack *key_pack = NULL;
-    krb5_reply_key_pack_draft9 *key_pack9 = NULL;
     krb5_data dh_data = { 0, 0, NULL };
     unsigned char *client_key = NULL, *kdc_hostname = NULL;
     unsigned int client_key_len = 0;
@@ -852,37 +800,10 @@ pkinit_as_rep_parse(krb5_context context,
         print_buffer_bin(dh_data.data, dh_data.length,
                          "/tmp/client_key_pack");
 #endif
-        if ((retval = k5int_decode_krb5_reply_key_pack(&k5data,
-                                                       &key_pack)) != 0) {
+        retval = k5int_decode_krb5_reply_key_pack(&k5data, &key_pack);
+        if (retval) {
             pkiDebug("failed to decode reply_key_pack\n");
-#ifdef LONGHORN_BETA_COMPAT
-            /*
-             * LH Beta 3 requires the extra pa-data, even for RFC requests,
-             * in order to get the Checksum rather than a Nonce in the reply.
-             * This can be removed when LH SP1 is released.
-             */
-            if (pa_type == KRB5_PADATA_PK_AS_REP && longhorn == 0)
-#else
-                if (pa_type == KRB5_PADATA_PK_AS_REP)
-#endif
-                    goto cleanup;
-                else {
-                    if ((retval =
-                         k5int_decode_krb5_reply_key_pack_draft9(&k5data,
-                                                                 &key_pack9)) != 0) {
-                        pkiDebug("failed to decode reply_key_pack_draft9\n");
-                        goto cleanup;
-                    }
-                    pkiDebug("decode reply_key_pack_draft9\n");
-                    if (key_pack9->nonce != request->nonce) {
-                        pkiDebug("nonce in AS_REP=%d doesn't match AS_REQ=%d\n",                                 key_pack9->nonce, request->nonce);
-                        retval = -1;
-                        goto cleanup;
-                    }
-                    krb5_copy_keyblock_contents(context, &key_pack9->replyKey,
-                                                key_block);
-                    break;
-                }
+            goto cleanup;
         }
         /*
          * This is hack but Windows sends back SHA1 checksum
@@ -902,8 +823,8 @@ pkinit_as_rep_parse(krb5_context context,
         }
 
         if ((cksum.length != key_pack->asChecksum.length) ||
-            memcmp(cksum.contents, key_pack->asChecksum.contents,
-                   cksum.length)) {
+            k5_bcmp(cksum.contents, key_pack->asChecksum.contents,
+                    cksum.length) != 0) {
             TRACE_PKINIT_CLIENT_REP_CHECKSUM_FAIL(context, &cksum,
                                                   &key_pack->asChecksum);
             pkiDebug("failed to match the checksums\n");
@@ -950,8 +871,6 @@ cleanup:
         free_krb5_reply_key_pack(&key_pack);
         free(cksum.contents);
     }
-    if (key_pack9 != NULL)
-        free_krb5_reply_key_pack_draft9(&key_pack9);
 
     free(kdc_hostname);
 
@@ -964,21 +883,16 @@ static void
 pkinit_client_profile(krb5_context context,
                       pkinit_context plgctx,
                       pkinit_req_context reqctx,
+                      krb5_clpreauth_callbacks cb,
+                      krb5_clpreauth_rock rock,
                       const krb5_data *realm)
 {
+    const char *configured_identity;
     char *eku_string = NULL;
 
     pkiDebug("pkinit_client_profile %p %p %p %p\n",
              context, plgctx, reqctx, realm);
 
-    pkinit_libdefault_boolean(context, realm,
-                              KRB5_CONF_PKINIT_WIN2K,
-                              reqctx->opts->win2k_target,
-                              &reqctx->opts->win2k_target);
-    pkinit_libdefault_boolean(context, realm,
-                              KRB5_CONF_PKINIT_WIN2K_REQUIRE_BINDING,
-                              reqctx->opts->win2k_require_cksum,
-                              &reqctx->opts->win2k_require_cksum);
     pkinit_libdefault_boolean(context, realm,
                               KRB5_CONF_PKINIT_REQUIRE_CRL_CHECKING,
                               reqctx->opts->require_crl_checking,
@@ -1013,13 +927,6 @@ pkinit_client_profile(krb5_context context,
         }
         free(eku_string);
     }
-#ifdef LONGHORN_BETA_COMPAT
-    /* Temporarily just set global flag from config file */
-    pkinit_libdefault_boolean(context, realm,
-                              KRB5_CONF_PKINIT_LONGHORN,
-                              0,
-                              &longhorn);
-#endif
 
     /* Only process anchors here if they were not specified on command line */
     if (reqctx->idopts->anchors == NULL)
@@ -1035,6 +942,205 @@ pkinit_client_profile(krb5_context context,
     pkinit_libdefault_strings(context, realm,
                               KRB5_CONF_PKINIT_IDENTITIES,
                               &reqctx->idopts->identity_alt);
+    reqctx->do_identity_matching = TRUE;
+
+    /* If we had a primary identity in the stored configuration, pick it up. */
+    configured_identity = cb->get_cc_config(context, rock,
+                                            "X509_user_identity");
+    if (configured_identity != NULL) {
+        free(reqctx->idopts->identity);
+        reqctx->idopts->identity = strdup(configured_identity);
+        reqctx->do_identity_matching = FALSE;
+    }
+}
+
+/*
+ * Convert a PKCS11 token flags value to the subset that we're interested in
+ * passing along to our API callers.
+ */
+static long long
+pkinit_client_get_token_flags(unsigned long pkcs11_token_flags)
+{
+    long long flags = 0;
+
+    if (pkcs11_token_flags & CKF_USER_PIN_COUNT_LOW)
+        flags |= KRB5_RESPONDER_PKINIT_FLAGS_TOKEN_USER_PIN_COUNT_LOW;
+    if (pkcs11_token_flags & CKF_USER_PIN_FINAL_TRY)
+        flags |= KRB5_RESPONDER_PKINIT_FLAGS_TOKEN_USER_PIN_FINAL_TRY;
+    if (pkcs11_token_flags & CKF_USER_PIN_LOCKED)
+        flags |= KRB5_RESPONDER_PKINIT_FLAGS_TOKEN_USER_PIN_LOCKED;
+    return flags;
+}
+
+/*
+ * Phase one of loading client identity information - call
+ * identity_initialize() to load any identities which we can without requiring
+ * help from the calling user, and use their names of those which we can't load
+ * to construct the challenge for the responder callback.
+ */
+static krb5_error_code
+pkinit_client_prep_questions(krb5_context context,
+                             krb5_clpreauth_moddata moddata,
+                             krb5_clpreauth_modreq modreq,
+                             krb5_get_init_creds_opt *opt,
+                             krb5_clpreauth_callbacks cb,
+                             krb5_clpreauth_rock rock,
+                             krb5_kdc_req *request,
+                             krb5_data *encoded_request_body,
+                             krb5_data *encoded_previous_request,
+                             krb5_pa_data *pa_data)
+{
+    krb5_error_code retval;
+    pkinit_context plgctx = (pkinit_context)moddata;
+    pkinit_req_context reqctx = (pkinit_req_context)modreq;
+    int i, n;
+    const pkinit_deferred_id *deferred_ids;
+    const char *identity;
+    unsigned long ck_flags;
+    char *encoded;
+    k5_json_object jval = NULL;
+    k5_json_number jflag = NULL;
+
+    if (!reqctx->identity_initialized) {
+        pkinit_client_profile(context, plgctx, reqctx, cb, rock,
+                              &request->server->realm);
+        retval = pkinit_identity_initialize(context, plgctx->cryptoctx,
+                                            reqctx->cryptoctx, reqctx->idopts,
+                                            reqctx->idctx, cb, rock,
+                                            request->client);
+        if (retval != 0) {
+            TRACE_PKINIT_CLIENT_NO_IDENTITY(context);
+            pkiDebug("pkinit_identity_initialize returned %d (%s)\n",
+                     retval, error_message(retval));
+        }
+
+        reqctx->identity_initialized = TRUE;
+        crypto_free_cert_info(context, plgctx->cryptoctx,
+                              reqctx->cryptoctx, reqctx->idctx);
+        if (retval != 0) {
+            pkiDebug("%s: not asking responder question\n", __FUNCTION__);
+            retval = 0;
+            goto cleanup;
+        }
+    }
+
+    deferred_ids = crypto_get_deferred_ids(context, reqctx->idctx);
+    for (i = 0; deferred_ids != NULL && deferred_ids[i] != NULL; i++)
+        continue;
+    n = i;
+
+    /* Make sure we don't just return an empty challenge. */
+    if (n == 0) {
+        pkiDebug("%s: no questions to ask\n", __FUNCTION__);
+        retval = 0;
+        goto cleanup;
+    }
+
+    /* Create the top-level object. */
+    retval = k5_json_object_create(&jval);
+    if (retval != 0)
+        goto cleanup;
+
+    for (i = 0; i < n; i++) {
+        /* Add an entry to the top-level object for the identity. */
+        identity = deferred_ids[i]->identity;
+        ck_flags = deferred_ids[i]->ck_flags;
+        /* Calculate the flags value for the bits that that we care about. */
+        retval = k5_json_number_create(pkinit_client_get_token_flags(ck_flags),
+                                       &jflag);
+        if (retval != 0)
+            goto cleanup;
+        retval = k5_json_object_set(jval, identity, jflag);
+        if (retval != 0)
+            goto cleanup;
+        k5_json_release(jflag);
+        jflag = NULL;
+    }
+
+    /* Encode and done. */
+    retval = k5_json_encode(jval, &encoded);
+    if (retval == 0) {
+        cb->ask_responder_question(context, rock,
+                                   KRB5_RESPONDER_QUESTION_PKINIT,
+                                   encoded);
+        pkiDebug("%s: asking question '%s'\n", __FUNCTION__, encoded);
+        free(encoded);
+    }
+
+cleanup:
+    k5_json_release(jval);
+    k5_json_release(jflag);
+
+    pkiDebug("%s returning %d\n", __FUNCTION__, retval);
+
+    return retval;
+}
+
+/*
+ * Parse data supplied by the application's responder callback, saving off any
+ * PINs and passwords for identities which we noted needed them.
+ */
+struct save_one_password_data {
+    krb5_context context;
+    krb5_clpreauth_modreq modreq;
+    const char *caller;
+};
+
+static void
+save_one_password(void *arg, const char *key, k5_json_value val)
+{
+    struct save_one_password_data *data = arg;
+    pkinit_req_context reqctx = (pkinit_req_context)data->modreq;
+    const char *password;
+
+    if (k5_json_get_tid(val) == K5_JSON_TID_STRING) {
+        password = k5_json_string_utf8(val);
+        pkiDebug("%s: \"%s\": %p\n", data->caller, key, password);
+        crypto_set_deferred_id(data->context, reqctx->idctx, key, password);
+    }
+}
+
+static krb5_error_code
+pkinit_client_parse_answers(krb5_context context,
+                            krb5_clpreauth_moddata moddata,
+                            krb5_clpreauth_modreq modreq,
+                            krb5_clpreauth_callbacks cb,
+                            krb5_clpreauth_rock rock)
+{
+    krb5_error_code retval;
+    const char *encoded;
+    k5_json_value jval;
+    struct save_one_password_data data;
+
+    data.context = context;
+    data.modreq = modreq;
+    data.caller = __FUNCTION__;
+
+    encoded = cb->get_responder_answer(context, rock,
+                                       KRB5_RESPONDER_QUESTION_PKINIT);
+    if (encoded == NULL)
+        return 0;
+
+    pkiDebug("pkinit_client_parse_answers: %s\n", encoded);
+
+    retval = k5_json_decode(encoded, &jval);
+    if (retval != 0)
+        goto cleanup;
+
+    /* Expect that the top-level answer is an object. */
+    if (k5_json_get_tid(jval) != K5_JSON_TID_OBJECT) {
+        retval = EINVAL;
+        goto cleanup;
+    }
+
+    /* Store the passed-in per-identity passwords. */
+    k5_json_object_iterate(jval, &save_one_password, &data);
+    retval = 0;
+
+cleanup:
+    if (jval != NULL)
+        k5_json_release(jval);
+    return retval;
 }
 
 static krb5_error_code
@@ -1092,15 +1198,43 @@ pkinit_client_process(krb5_context context, krb5_clpreauth_moddata moddata,
     }
 
     if (processing_request) {
-        pkinit_client_profile(context, plgctx, reqctx,
+        pkinit_client_profile(context, plgctx, reqctx, cb, rock,
                               &request->server->realm);
-        pkinit_identity_set_prompter(reqctx->idctx, prompter, prompter_data);
-        retval = pkinit_identity_initialize(context, plgctx->cryptoctx,
-                                            reqctx->cryptoctx, reqctx->idopts,
-                                            reqctx->idctx, 1, request->client);
+        /* Pull in PINs and passwords for identities which we deferred
+         * loading earlier. */
+        retval = pkinit_client_parse_answers(context, moddata, modreq,
+                                             cb, rock);
         if (retval) {
+            if (retval == KRB5KRB_ERR_GENERIC)
+                pkiDebug("pkinit responder answers were invalid\n");
+            return retval;
+        }
+        if (!reqctx->identity_prompted) {
+            reqctx->identity_prompted = TRUE;
+            /*
+             * Load identities (again, potentially), prompting, if we can, for
+             * anything for which we didn't get an answer from the responder
+             * callback.
+             */
+            pkinit_identity_set_prompter(reqctx->idctx, prompter,
+                                         prompter_data);
+            retval = pkinit_identity_prompt(context, plgctx->cryptoctx,
+                                            reqctx->cryptoctx, reqctx->idopts,
+                                            reqctx->idctx, cb, rock,
+                                            reqctx->do_identity_matching,
+                                            request->client);
+            pkinit_identity_set_prompter(reqctx->idctx, NULL, NULL);
+            reqctx->identity_prompt_retval = retval;
+            if (retval) {
+                TRACE_PKINIT_CLIENT_NO_IDENTITY(context);
+                pkiDebug("pkinit_identity_prompt returned %d (%s)\n",
+                         retval, error_message(retval));
+                return retval;
+            }
+        } else if (reqctx->identity_prompt_retval) {
+            retval = reqctx->identity_prompt_retval;
             TRACE_PKINIT_CLIENT_NO_IDENTITY(context);
-            pkiDebug("pkinit_identity_initialize returned %d (%s)\n",
+            pkiDebug("pkinit_identity_prompt previously returned %d (%s)\n",
                      retval, error_message(retval));
             return retval;
         }
@@ -1115,8 +1249,10 @@ pkinit_client_process(krb5_context context, krb5_clpreauth_moddata moddata,
         retval = pa_pkinit_parse_rep(context, plgctx, reqctx, request,
                                      in_padata, enctype, &as_key,
                                      encoded_previous_request);
-        if (retval == 0)
+        if (retval == 0) {
             retval = cb->set_as_key(context, rock, &as_key);
+            krb5_free_keyblock_contents(context, &as_key);
+        }
     }
 
     pkiDebug("pkinit_client_process: returning %d (%s)\n",
@@ -1215,7 +1351,7 @@ static int
 pkinit_client_get_flags(krb5_context kcontext, krb5_preauthtype patype)
 {
     if (patype == KRB5_PADATA_PKINIT_KX)
-        return PA_INFO|PA_PSEUDO;
+        return PA_INFO;
     return PA_REAL;
 }
 
@@ -1391,40 +1527,21 @@ pkinit_client_plugin_fini(krb5_context context, krb5_clpreauth_moddata moddata)
 static krb5_error_code
 add_string_to_array(krb5_context context, char ***array, const char *addition)
 {
-    char **out = NULL;
+    char **a = *array;
+    size_t len;
 
-    if (*array == NULL) {
-        out = malloc(2 * sizeof(char *));
-        if (out == NULL)
-            return ENOMEM;
-        out[1] = NULL;
-        out[0] = strdup(addition);
-        if (out[0] == NULL) {
-            free(out);
-            return ENOMEM;
-        }
-    } else {
-        int i;
-        char **a = *array;
-        for (i = 0; a[i] != NULL; i++);
-        out = malloc( (i + 2) * sizeof(char *));
-        if (out == NULL)
-            return ENOMEM;
-        for (i = 0; a[i] != NULL; i++) {
-            out[i] = a[i];
-        }
-        out[i++] = strdup(addition);
-        if (out == NULL) {
-            free(out);
-            return ENOMEM;
-        }
-        out[i] = NULL;
-        free(*array);
-    }
-    *array = out;
-
+    for (len = 0; a != NULL && a[len] != NULL; len++);
+    a = realloc(a, (len + 2) * sizeof(char *));
+    if (a == NULL)
+        return ENOMEM;
+    *array = a;
+    a[len] = strdup(addition);
+    if (a[len] == NULL)
+        return ENOMEM;
+    a[len + 1] = NULL;
     return 0;
 }
+
 static krb5_error_code
 handle_gic_opt(krb5_context context,
                pkinit_context plgctx,
@@ -1494,6 +1611,7 @@ clpreauth_pkinit_initvt(krb5_context context, int maj_ver, int min_ver,
     vt->fini = pkinit_client_plugin_fini;
     vt->flags = pkinit_client_get_flags;
     vt->request_init = pkinit_client_req_init;
+    vt->prep_questions = pkinit_client_prep_questions;
     vt->request_fini = pkinit_client_req_fini;
     vt->process = pkinit_client_process;
     vt->tryagain = pkinit_client_tryagain;

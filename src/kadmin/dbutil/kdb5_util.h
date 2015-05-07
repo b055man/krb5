@@ -70,8 +70,8 @@ extern int create_db_entry (krb5_principal, krb5_db_entry *);
 extern int kadm5_create_magic_princs (kadm5_config_params *params,
                                       krb5_context context);
 
-extern int process_ov_principal (char *fname, krb5_context kcontext,
-                                 FILE *filep, int verbose,
+extern int process_ov_principal (krb5_context kcontext, const char *fname,
+                                 FILE *filep, krb5_boolean verbose,
                                  int *linenop);
 
 extern void load_db (int argc, char **argv);
@@ -86,8 +86,6 @@ extern void kdb5_update_princ_encryption (int argc, char **argv);
 extern krb5_error_code master_key_convert(krb5_context context,
                                           krb5_db_entry *db_entry);
 extern void kdb5_purge_mkeys (int argc, char **argv);
-
-extern void update_ok_file (char *file_name);
 
 extern int kadm5_create (kadm5_config_params *params);
 

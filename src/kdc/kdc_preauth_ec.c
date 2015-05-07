@@ -30,7 +30,7 @@
  */
 
 #include <k5-int.h>
-#include <krb5/preauth_plugin.h>
+#include <krb5/kdcpreauth_plugin.h>
 #include "kdc_util.h"
 
 static void
@@ -40,7 +40,12 @@ ec_edata(krb5_context context, krb5_kdc_req *request,
          krb5_kdcpreauth_edata_respond_fn respond, void *arg)
 {
     krb5_keyblock *armor_key = cb->fast_armor(context, rock);
-    (*respond)(arg, (armor_key == NULL) ? ENOENT : 0, NULL);
+
+    /* Encrypted challenge only works with FAST, and requires a client key. */
+    if (armor_key == NULL || !cb->have_client_keys(context, rock))
+        (*respond)(arg, ENOENT, NULL);
+    else
+        (*respond)(arg, 0, NULL);
 }
 
 static void
@@ -66,9 +71,8 @@ ec_verify(krb5_context context, krb5_data *req_pkt, krb5_kdc_req *request,
 
     if (armor_key == NULL) {
         retval = ENOENT;
-        krb5_set_error_message(context, ENOENT,
-                               _("Encrypted Challenge used outside of FAST "
-                                 "tunnel"));
+        k5_setmsg(context, ENOENT,
+                  _("Encrypted Challenge used outside of FAST tunnel"));
     }
     scratch.data = (char *) data->contents;
     scratch.length = data->length;
@@ -102,9 +106,8 @@ ec_verify(krb5_context context, krb5_data *req_pkt, krb5_kdc_req *request,
         }
         if (client_keys[i].enctype == 0) {
             retval = KRB5KDC_ERR_PREAUTH_FAILED;
-            krb5_set_error_message(context, retval,
-                                   _("Incorrect password in encrypted "
-                                     "challenge"));
+            k5_setmsg(context, retval,
+                      _("Incorrect password in encrypted challenge"));
         }
     }
     if (retval == 0)

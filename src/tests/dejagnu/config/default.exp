@@ -189,6 +189,30 @@ set passes {
 	{dummy=[verbose -log "AES enctypes"]}
     }
     {
+	camellia-only
+	mode=udp
+	des3_krbtgt=0
+	{supported_enctypes=camellia256-cts:normal}
+	{permitted_enctypes(kdc)=camellia256-cts}
+	{permitted_enctypes(slave)=camellia256-cts}
+	{permitted_enctypes(client)=camellia256-cts}
+	{permitted_enctypes(server)=camellia256-cts}
+	{default_tgs_enctypes(kdc)=camellia256-cts}
+	{default_tgs_enctypes(slave)=camellia256-cts}
+	{default_tgs_enctypes(client)=camellia256-cts}
+	{default_tgs_enctypes(server)=camellia256-cts}
+	{default_tkt_enctypes(kdc)=camellia256-cts}
+	{default_tkt_enctypes(slave)=camellia256-cts}
+	{default_tkt_enctypes(client)=camellia256-cts}
+	{default_tkt_enctypes(server)=camellia256-cts}
+	{allow_weak_crypto(kdc)=false}
+	{allow_weak_crypto(slave)=false}
+	{allow_weak_crypto(client)=false}
+	{allow_weak_crypto(server)=false}
+	{master_key_type=camellia256-cts}
+	{dummy=[verbose -log "Camellia-256 enctype"]}
+    }
+    {
 	aes-des3
 	mode=udp
 	des3_krbtgt=0
@@ -262,32 +286,6 @@ set passes {
 		"DES3 TGT, KDC permitting only des-cbc-crc"]}
     }
 }
-
-# Add to above when Camellia support becomes unconditional.
-#    {
-#	camellia-only
-#	mode=udp
-#	des3_krbtgt=0
-#	{supported_enctypes=camellia256-cts:normal}
-#	{permitted_enctypes(kdc)=camellia256-cts}
-#	{permitted_enctypes(slave)=camellia256-cts}
-#	{permitted_enctypes(client)=camellia256-cts}
-#	{permitted_enctypes(server)=camellia256-cts}
-#	{default_tgs_enctypes(kdc)=camellia256-cts}
-#	{default_tgs_enctypes(slave)=camellia256-cts}
-#	{default_tgs_enctypes(client)=camellia256-cts}
-#	{default_tgs_enctypes(server)=camellia256-cts}
-#	{default_tkt_enctypes(kdc)=camellia256-cts}
-#	{default_tkt_enctypes(slave)=camellia256-cts}
-#	{default_tkt_enctypes(client)=camellia256-cts}
-#	{default_tkt_enctypes(server)=camellia256-cts}
-#	{allow_weak_crypto(kdc)=false}
-#	{allow_weak_crypto(slave)=false}
-#	{allow_weak_crypto(client)=false}
-#	{allow_weak_crypto(server)=false}
-#	{master_key_type=camellia256-cts}
-#	{dummy=[verbose -log "Camellia-256 enctype"]}
-#    }
 
 # des.md5-tgt is set as unused, since it won't trigger the error case
 # if SUPPORT_DESMD5 isn't honored.
@@ -1256,7 +1254,7 @@ proc setup_kerberos_db { standalone } {
     }
 
     # Add an incremental-propagation service.
-    set test "kadmin.local ank kiprop/$hostname"
+    set test "kadmin.local ank krbtest/fast"
     set body {
 	if $failall {
 	    break
@@ -1265,18 +1263,6 @@ proc setup_kerberos_db { standalone } {
 	verbose "starting $test"
 	expect_after $def_exp_after
 
-	expect "kadmin.local: "
-	send "ank kiprop/$hostname@$REALMNAME\r"
-	# It echos...
-	expect "ank kiprop/$hostname@$REALMNAME\r"
-	expect "Enter password for principal \"kiprop/$hostname@$REALMNAME\":"
-	send "kiproppass$KEY\r"
-	expect "Re-enter password for principal \"kiprop/$hostname@$REALMNAME\":"
-	send "kiproppass$KEY\r"
-	expect {
-	    "Principal \"kiprop/$hostname@$REALMNAME\" created" { }
-	    "Principal or policy already exists while creating*" { }
-	}
 	expect "kadmin.local: "
 	send "ank +requires_preauth krbtest/fast@$REALMNAME\r"
 	expect "Enter password for principal \"krbtest/fast@$REALMNAME\":"
@@ -1512,7 +1498,7 @@ proc start_kpropd {} {
 
     envstack_push
     setup_kerberos_env slave
-    spawn $KPROPD -S -d -P [expr 10 + $portbase] -s $tmppwd/srvtab -f $tmppwd/incoming-slave-datatrans -p $KDB5_UTIL -a $tmppwd/kpropd-acl
+    spawn $KPROPD -S -d -t -P [expr 10 + $portbase] -s $tmppwd/srvtab -f $tmppwd/incoming-slave-datatrans -p $KDB5_UTIL -a $tmppwd/kpropd-acl
     set kpropd_pid [exp_pid]
     set kpropd_spawn_id $spawn_id
 #    send_user [list $KPROPD -S -d -P [expr 10 + $portbase] -s $tmppwd/srvtab -f $tmppwd/incoming-slave-datatrans -p $KDB5_UTIL -a $tmppwd/kpropd-acl]\n
@@ -2207,7 +2193,7 @@ proc do_klist_err { testname } {
     spawn $KLIST -5
     # Might say "credentials cache" or "credentials cache file".
     expect {
-	-re "klist: No credentials cache.*found.*\r\n" {
+	-re "klist: Credentials cache file .* not found.*\r\n" {
 	    verbose "klist started"
 	}
 	timeout {

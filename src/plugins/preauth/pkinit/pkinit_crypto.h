@@ -231,6 +231,16 @@ krb5_error_code cms_envelopeddata_verify
 		    receives length of signed_data */
 
 /*
+ * This function retrieves the signer's identity, in a form that could
+ * be passed back in to a future invocation of this module as a candidate
+ * client identity location.
+ */
+krb5_error_code crypto_retrieve_signer_identity
+	(krb5_context context,				/* IN */
+	pkinit_identity_crypto_context id_cryptoctx,	/* IN */
+	const char **identity);				/* OUT */
+
+/*
  * this function returns SAN information found in the
  * received certificate.  at least one of pkinit_sans,
  * upn_sans, or kdc_hostnames must be non-NULL.
@@ -414,6 +424,17 @@ krb5_error_code create_issuerAndSerial
 		    receives length of encoded kdcPKId */
 
 /*
+ * These functions manipulate the deferred-identities list in the identity
+ * context, which is opaque outside of the crypto-specific bits.
+ */
+const pkinit_deferred_id * crypto_get_deferred_ids
+	(krb5_context context, pkinit_identity_crypto_context id_cryptoctx);
+krb5_error_code crypto_set_deferred_id
+	(krb5_context context,
+	 pkinit_identity_crypto_context id_cryptoctx,
+	 const char *identity, const char *password);
+
+/*
  * process the values from idopts and obtain the cert(s)
  * specified by those options, populating the id_cryptoctx.
  */
@@ -423,7 +444,8 @@ krb5_error_code crypto_load_certs
 	pkinit_req_crypto_context req_cryptoctx,	/* IN */
 	pkinit_identity_opts *idopts,			/* IN */
 	pkinit_identity_crypto_context id_cryptoctx,	/* IN/OUT */
-	krb5_principal princ);				/* IN */
+	krb5_principal princ,				/* IN */
+	krb5_boolean defer_id_prompts);			/* IN */
 
 /*
  * Free up information held from crypto_load_certs()

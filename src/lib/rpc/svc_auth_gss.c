@@ -34,9 +34,7 @@
   Id: svc_auth_gss.c,v 1.28 2002/10/15 21:29:36 kwc Exp
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "k5-platform.h"
 #include <gssrpc/rpc.h>
 #include <gssrpc/auth_gssapi.h>
 #ifdef HAVE_HEIMDAL
@@ -46,7 +44,6 @@
 #include <gssapi/gssapi.h>
 #include <gssapi/gssapi_generic.h>
 #endif
-#include "k5-platform.h"	/* SIZE_MAX */
 
 #ifdef DEBUG_GSSAPI
 int svc_debug_gss = DEBUG_GSSAPI;
@@ -68,18 +65,10 @@ extern const gss_OID_desc * const gss_mech_spkm3;
 
 extern SVCAUTH svc_auth_none;
 
-/*
- * from mit-krb5-1.2.1 mechglue/mglueP.h:
- * Array of context IDs typed by mechanism OID
- */
-typedef struct gss_union_ctx_id_t {
-  gss_OID     mech_type;
-  gss_ctx_id_t    internal_ctx_id;
-} gss_union_ctx_id_desc, *gss_union_ctx_id_t;
-
-
 static auth_gssapi_log_badauth_func log_badauth = NULL;
 static caddr_t log_badauth_data = NULL;
+static auth_gssapi_log_badauth2_func log_badauth2 = NULL;
+static caddr_t log_badauth2_data = NULL;
 static auth_gssapi_log_badverf_func log_badverf = NULL;
 static caddr_t log_badverf_data = NULL;
 static auth_gssapi_log_miscerr_func log_miscerr = NULL;
@@ -186,6 +175,16 @@ svcauth_gss_release_cred(void)
 	return (TRUE);
 }
 
+/* Invoke log_badauth callbacks for an authentication failure. */
+static void
+badauth(OM_uint32 maj, OM_uint32 minor, SVCXPRT *xprt)
+{
+	if (log_badauth != NULL)
+		(*log_badauth)(maj, minor, &xprt->xp_raddr, log_badauth_data);
+	if (log_badauth2 != NULL)
+		(*log_badauth2)(maj, minor, xprt, log_badauth2_data);
+}
+
 static bool_t
 svcauth_gss_accept_sec_context(struct svc_req *rqst,
 			       struct rpc_gss_init_res *gr)
@@ -226,25 +225,12 @@ svcauth_gss_accept_sec_context(struct svc_req *rqst,
 	log_status("accept_sec_context", gr->gr_major, gr->gr_minor);
 	if (gr->gr_major != GSS_S_COMPLETE &&
 	    gr->gr_major != GSS_S_CONTINUE_NEEDED) {
-		if (log_badauth != NULL) {
-			(*log_badauth)(gr->gr_major,
-				       gr->gr_minor,
-				       &rqst->rq_xprt->xp_raddr,
-				       log_badauth_data);
-		}
+		badauth(gr->gr_major, gr->gr_minor, rqst->rq_xprt);
 		gd->ctx = GSS_C_NO_CONTEXT;
 		goto errout;
 	}
-	/*
-	 * ANDROS: krb5 mechglue returns ctx of size 8 - two pointers,
-	 * one to the mechanism oid, one to the internal_ctx_id
-	 */
-	if ((gr->gr_ctx.value = mem_alloc(sizeof(gss_union_ctx_id_desc))) == NULL) {
-		fprintf(stderr, "svcauth_gss_accept_context: out of memory\n");
-		goto errout;
-	}
-	memcpy(gr->gr_ctx.value, gd->ctx, sizeof(gss_union_ctx_id_desc));
-	gr->gr_ctx.length = sizeof(gss_union_ctx_id_desc);
+	gr->gr_ctx.value = "xxxx";
+	gr->gr_ctx.length = 4;
 
 	/* gr->gr_win = 0x00000005; ANDROS: for debugging linux kernel version...  */
 	gr->gr_win = sizeof(gd->seqmask) * 8;
@@ -486,8 +472,8 @@ gssrpc__svcauth_gss(struct svc_req *rqst, struct rpc_msg *msg,
 			offset = 0 - offset;
 			gd->seqmask <<= offset;
 			offset = 0;
-		}
-		else if (offset >= gd->win || (gd->seqmask & (1 << offset))) {
+		} else if ((u_int)offset >= gd->win ||
+			   (gd->seqmask & (1 << offset))) {
 			*no_dispatch = 1;
 			ret_freegc (RPCSEC_GSS_CTXPROBLEM);
 		}
@@ -516,8 +502,6 @@ gssrpc__svcauth_gss(struct svc_req *rqst, struct rpc_msg *msg,
 
 		if (!svcauth_gss_nextverf(rqst, htonl(gr.gr_win))) {
 			gss_release_buffer(&min_stat, &gr.gr_token);
-			mem_free(gr.gr_ctx.value,
-				 sizeof(gss_union_ctx_id_desc));
 			ret_freegc (AUTH_FAILED);
 		}
 		*no_dispatch = TRUE;
@@ -527,7 +511,6 @@ gssrpc__svcauth_gss(struct svc_req *rqst, struct rpc_msg *msg,
 
 		gss_release_buffer(&min_stat, &gr.gr_token);
 		gss_release_buffer(&min_stat, &gd->checksum);
-		mem_free(gr.gr_ctx.value, sizeof(gss_union_ctx_id_desc));
 		if (!call_stat)
 			ret_freegc (AUTH_FAILED);
 
@@ -671,6 +654,14 @@ void svcauth_gss_set_log_badauth_func(
 {
 	log_badauth = func;
 	log_badauth_data = data;
+}
+
+void
+svcauth_gss_set_log_badauth2_func(auth_gssapi_log_badauth2_func func,
+				  caddr_t data)
+{
+	log_badauth2 = func;
+	log_badauth2_data = data;
 }
 
 /*

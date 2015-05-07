@@ -10,15 +10,12 @@
  * Use is subject to license terms.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
 #include "k5-int.h"
 #include <kadm5/admin.h>
 #include "server_internal.h"
 
 krb5_principal      master_princ;
 krb5_keyblock       master_keyblock; /* local mkey */
-krb5_actkvno_node   *active_mkey_list = NULL;
 krb5_db_entry       master_db;
 
 krb5_principal      hist_princ;
@@ -73,17 +70,29 @@ krb5_error_code kdb_init_master(kadm5_server_handle_t handle,
         return (ret);
     }
 
-    if ((ret = krb5_dbe_fetch_act_key_list(handle->context, master_princ,
-                                           &active_mkey_list))) {
-        krb5_db_fini(handle->context);
-        return (ret);
-    }
-
 done:
     if (r == NULL)
         free(realm);
 
     return(ret);
+}
+
+/* Fetch the currently active master key version number and keyblock. */
+krb5_error_code
+kdb_get_active_mkey(kadm5_server_handle_t handle, krb5_kvno *act_kvno_out,
+                    krb5_keyblock **act_mkey_out)
+{
+    krb5_error_code ret;
+    krb5_actkvno_node *active_mkey_list;
+
+    ret = krb5_dbe_fetch_act_key_list(handle->context, master_princ,
+                                      &active_mkey_list);
+    if (ret)
+        return ret;
+    ret = krb5_dbe_find_act_mkey(handle->context, active_mkey_list,
+                                 act_kvno_out, act_mkey_out);
+    krb5_dbe_free_actkvno_list(handle->context, active_mkey_list);
+    return ret;
 }
 
 /*
@@ -179,8 +188,8 @@ kdb_get_hist_key(kadm5_server_handle_t handle, krb5_keyblock **keyblocks_out,
 
     if (kdb->n_key_data <= 0) {
         ret = KRB5_KDB_NO_MATCHING_KEY;
-        krb5_set_error_message(handle->context, ret,
-                               _("History entry contains no key data"));
+        k5_setmsg(handle->context, ret,
+                  _("History entry contains no key data"));
         goto done;
     }
 
@@ -188,7 +197,7 @@ kdb_get_hist_key(kadm5_server_handle_t handle, krb5_keyblock **keyblocks_out,
     if (ret)
         goto done;
 
-    kblist = k5alloc((kdb->n_key_data + 1) * sizeof(*kblist), &ret);
+    kblist = k5calloc(kdb->n_key_data + 1, sizeof(*kblist), &ret);
     if (kblist == NULL)
         goto done;
     for (i = 0; i < kdb->n_key_data; i++) {
@@ -282,7 +291,7 @@ kdb_get_entry(kadm5_server_handle_t handle,
             return(ret);
         }
 
-        xdrmem_create(&xdrs, tl_data.tl_data_contents,
+        xdrmem_create(&xdrs, (caddr_t)tl_data.tl_data_contents,
                       tl_data.tl_data_length, XDR_DECODE);
         if (! xdr_osa_princ_ent_rec(&xdrs, adb)) {
             xdr_destroy(&xdrs);
@@ -373,7 +382,7 @@ kdb_put_entry(kadm5_server_handle_t handle,
     }
     tl_data.tl_data_type = KRB5_TL_KADM_DATA;
     tl_data.tl_data_length = xdr_getpos(&xdrs);
-    tl_data.tl_data_contents = xdralloc_getdata(&xdrs);
+    tl_data.tl_data_contents = (krb5_octet *)xdralloc_getdata(&xdrs);
 
     ret = krb5_dbe_update_tl_data(handle->context, kdb, &tl_data);
 
@@ -428,7 +437,7 @@ kdb_iter_entry(kadm5_server_handle_t handle, char *match_entry,
     id.func = iter_fct;
     id.data = data;
 
-    ret = krb5_db_iterate(handle->context, match_entry, kdb_iter_func, &id);
+    ret = krb5_db_iterate(handle->context, match_entry, kdb_iter_func, &id, 0);
     if (ret)
         return(ret);
 

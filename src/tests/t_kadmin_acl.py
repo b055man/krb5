@@ -14,7 +14,7 @@ def make_client(name):
 
 def kadmin_as(client, query):
     global realm
-    return realm.run_as_client([kadmin, '-c', client, '-q', query])
+    return realm.run([kadmin, '-c', client, '-q', query])
 
 def delprinc(name):
     global realm
@@ -40,6 +40,7 @@ wctarget = make_client('wctarget')
 admin = make_client('user/admin')
 none = make_client('none')
 restrictions = make_client('restrictions')
+onetwothreefour = make_client('one/two/three/four')
 
 realm.run_kadminl('addpol -minlife "1 day" minlife')
 
@@ -64,6 +65,7 @@ restricted_modify  im  *         +preauth
 restricted_rename  ad  *         +preauth
 
 */*                d   *2/*1
+*/two/*/*          d   *3/*1/*2
 */admin            a
 wctarget           a   wild/*
 restrictions       a   type1     -policy minlife
@@ -260,6 +262,9 @@ if 'Operation requires ``modify\'\' privilege' not in out:
 out = kadmin_as(some_modify, 'purgekeys unselected')
 if 'Operation requires ``modify\'\' privilege' not in out:
     fail('purgekeys failure (target)')
+out = kadmin_as(none, 'purgekeys none')
+if 'Old keys for principal "none@KRBTEST.COM" purged' not in out:
+    fail('purgekeys success (self exemption)')
 delprinc('selected')
 delprinc('unselected')
 
@@ -325,6 +330,10 @@ if 'Principal "admin/user@KRBTEST.COM" deleted.' not in out:
 out = kadmin_as(admin, 'delprinc -force none')
 if 'Operation requires' not in out:
     fail('delprinc failure (wildcard backreferences not matched)')
+realm.addprinc('four/one/three', 'pw')
+out = kadmin_as(onetwothreefour, 'delprinc -force four/one/three')
+if 'Principal "four/one/three@KRBTEST.COM" deleted.' not in out:
+    fail('delprinc success (wildcard backreferences 2)')
 
 kadmin_as(restrictions, 'addprinc -pw pw type1')
 out = realm.run_kadminl('getprinc type1')

@@ -69,7 +69,7 @@
 
 /* This version will be incremented when incompatible changes are made to the
  * KDB API, and will be kept in sync with the libkdb major version. */
-#define KRB5_KDB_API_VERSION 6
+#define KRB5_KDB_API_VERSION 8
 
 /* Salt types */
 #define KRB5_KDB_SALTTYPE_NORMAL        0
@@ -130,6 +130,10 @@
 
 #define KRB5_KDB_FLAGS_S4U                      ( KRB5_KDB_FLAG_PROTOCOL_TRANSITION | \
                                                   KRB5_KDB_FLAG_CONSTRAINED_DELEGATION )
+
+/* KDB iteration flags */
+#define KRB5_DB_ITER_WRITE      0x00000001
+#define KRB5_DB_ITER_REV        0x00000002
 
 /* String attribute names recognized by krb5 */
 #define KRB5_KDB_SK_SESSION_ENCTYPES            "session_enctypes"
@@ -215,7 +219,7 @@ typedef struct _osa_policy_ent_t {
     krb5_ui_4       pw_min_length;
     krb5_ui_4       pw_min_classes;
     krb5_ui_4       pw_history_num;
-    krb5_ui_4       policy_refcnt;
+    krb5_ui_4       policy_refcnt;              /* no longer used */
     /* Only valid if version > 1 */
     krb5_ui_4       pw_max_fail;                /* pwdMaxFailure */
     krb5_ui_4       pw_failcnt_interval;        /* pwdFailureCountInterval */
@@ -335,9 +339,7 @@ extern char *krb5_mkey_pwd_prompt2;
 #define KRB5_KDB_SRV_TYPE_ADMIN         0x0200
 #endif
 
-#ifndef KRB5_KDB_SRV_TYPE_PASSWD
-#define KRB5_KDB_SRV_TYPE_PASSWD        0x0300
-#endif
+/* 0x0300 was KRB5_KDB_SRV_TYPE_PASSWD but it is no longer used. */
 
 #ifndef KRB5_KDB_SRV_TYPE_OTHER
 #define KRB5_KDB_SRV_TYPE_OTHER         0x0400
@@ -348,7 +350,6 @@ extern char *krb5_mkey_pwd_prompt2;
 
 #define KRB5_DB_LOCKMODE_SHARED       0x0001
 #define KRB5_DB_LOCKMODE_EXCLUSIVE    0x0002
-#define KRB5_DB_LOCKMODE_DONTBLOCK    0x0004
 #define KRB5_DB_LOCKMODE_PERMANENT    0x0008
 
 /* libkdb.spec */
@@ -374,10 +375,16 @@ krb5_error_code krb5_db_put_principal ( krb5_context kcontext,
                                         krb5_db_entry *entry );
 krb5_error_code krb5_db_delete_principal ( krb5_context kcontext,
                                            krb5_principal search_for );
+
+/*
+ * Iterate over principals in the KDB.  If the callback may write to the DB,
+ * the caller must get an exclusive lock with krb5_db_lock before iterating,
+ * and release it with krb5_db_unlock after iterating.
+ */
 krb5_error_code krb5_db_iterate ( krb5_context kcontext,
                                   char *match_entry,
                                   int (*func) (krb5_pointer, krb5_db_entry *),
-                                  krb5_pointer func_arg );
+                                  krb5_pointer func_arg, krb5_flags iterflags );
 
 
 krb5_error_code krb5_db_store_master_key  ( krb5_context kcontext,
@@ -810,7 +817,7 @@ krb5_dbe_free_string(krb5_context, char *);
  * This number indicates the date of the last incompatible change to the DAL.
  * The maj_ver field of the module's vtable structure must match this version.
  */
-#define KRB5_KDB_DAL_MAJOR_VERSION 3
+#define KRB5_KDB_DAL_MAJOR_VERSION 5
 
 /*
  * A krb5_context can hold one database object.  Modules should use
@@ -902,7 +909,6 @@ typedef struct _kdb_vftabl {
      * KRB5_DB_LOCKMODE_SHARED: Lock may coexist with other shared locks.
      * KRB5_DB_LOCKMODE_EXCLUSIVE: Lock may not coexist with other locks.
      * KRB5_DB_LOCKMODE_PERMANENT: Exclusive lock surviving process exit.
-     * (KRB5_DB_LOCKMODE_DONTBLOCK is unused and unimplemented.)
      *
      * Used by the "kadmin lock" command, incremental propagation, and
      * kdb5_util dump.  Incremental propagation support requires shared locks
@@ -1014,7 +1020,7 @@ typedef struct _kdb_vftabl {
     krb5_error_code (*iterate)(krb5_context kcontext,
                                char *match_entry,
                                int (*func)(krb5_pointer, krb5_db_entry *),
-                               krb5_pointer func_arg);
+                               krb5_pointer func_arg, krb5_flags iterflags);
 
     /*
      * Optional: Create a password policy entry.  Return an error if the policy
@@ -1259,8 +1265,9 @@ typedef struct _kdb_vftabl {
 
     /*
      * Optional: Perform a policy check on a cross-realm ticket's transited
-     * field and return an error (other than KRB5_PLUGIN_OP_NOTSUPP) if the
-     * check fails.
+     * field.  Return 0 if the check authoritatively succeeds,
+     * KRB5_PLUGIN_NO_HANDLE to use the core transited-checking mechanisms, or
+     * another error (other than KRB5_PLUGIN_OP_NOTSUPP) if the check fails.
      */
     krb5_error_code (*check_transited_realms)(krb5_context kcontext,
                                               const krb5_data *tr_contents,
@@ -1274,7 +1281,7 @@ typedef struct _kdb_vftabl {
      *   - Place a short string literal into *status.
      *   - If desired, place data into e_data.  Any data placed here will be
      *     freed by the caller using the standard free function.
-     *   - Return an appropriate error (such as KDC_ERR_POLICY).
+     *   - Return an appropriate error (such as KRB5KDC_ERR_POLICY).
      */
     krb5_error_code (*check_policy_as)(krb5_context kcontext,
                                        krb5_kdc_req *request,
@@ -1291,7 +1298,7 @@ typedef struct _kdb_vftabl {
      *   - Place a short string literal into *status.
      *   - If desired, place data into e_data.  Any data placed here will be
      *     freed by the caller using the standard free function.
-     *   - Return an appropriate error (such as KDC_ERR_POLICY).
+     *   - Return an appropriate error (such as KRB5KDC_ERR_POLICY).
      * The input parameter ticket contains the TGT used in the TGS request.
      */
     krb5_error_code (*check_policy_tgs)(krb5_context kcontext,

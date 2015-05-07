@@ -70,7 +70,6 @@ krb5_update_server_info(krb5_ldap_server_handle *ldap_server_handle,
             if ((st=ldap_result2error(ldap_server_handle->ldap_handle, result, 1)) == LDAP_SUCCESS) {
                 server_info->server_status = ON;
             } else {
-                /* ?? */        krb5_set_error_message(0, 0, "%s", ldap_err2string(st));
                 server_info->server_status = OFF;
                 time(&server_info->downtime);
             }
@@ -164,27 +163,6 @@ krb5_put_ldap_handle(krb5_ldap_server_handle *ldap_server_handle)
 }
 
 /*
- * Add a new ldap server handle structure to the server info structure.
- * This function name can be changed to krb5_insert_ldap_handle.
- * Do not lock the mutex here. The caller should lock it
- */
-
-krb5_error_code
-krb5_update_ldap_handle(krb5_ldap_server_handle *ldap_server_handle,
-                        krb5_ldap_server_info *server_info)
-{
-
-    if (ldap_server_handle == NULL || server_info == NULL)
-        return 0;
-
-    ldap_server_handle->next = server_info->ldap_server_handles;
-    server_info->ldap_server_handles = ldap_server_handle;
-    server_info->num_conns++;
-    ldap_server_handle->server_info = server_info;
-    return 0;
-}
-
-/*
  * Free up all the ldap server handles of the server info.
  * This function is called when the ldap server returns LDAP_SERVER_DOWN.
  */
@@ -217,9 +195,7 @@ krb5_ldap_request_handle_from_pool(krb5_ldap_context *ldap_context,
 
     *ldap_server_handle = NULL;
 
-    st = HNDL_LOCK(ldap_context);
-    if (st)
-        return st;
+    HNDL_LOCK(ldap_context);
     if (((*ldap_server_handle)=krb5_get_ldap_handle(ldap_context)) == NULL)
         (*ldap_server_handle)=krb5_retry_get_ldap_handle(ldap_context, &st);
     HNDL_UNLOCK(ldap_context);
@@ -238,9 +214,7 @@ krb5_ldap_request_next_handle_from_pool(krb5_ldap_context *ldap_context,
 {
     krb5_error_code            st=0;
 
-    st = HNDL_LOCK(ldap_context);
-    if (st)
-        return st;
+    HNDL_LOCK(ldap_context);
     (*ldap_server_handle)->server_info->server_status = OFF;
     time(&(*ldap_server_handle)->server_info->downtime);
     krb5_put_ldap_handle(*ldap_server_handle);
@@ -261,10 +235,9 @@ krb5_ldap_put_handle_to_pool(krb5_ldap_context *ldap_context,
                              krb5_ldap_server_handle *ldap_server_handle)
 {
     if (ldap_server_handle != NULL) {
-        if (HNDL_LOCK(ldap_context) == 0) {
-            krb5_put_ldap_handle(ldap_server_handle);
-            HNDL_UNLOCK(ldap_context);
-        }
+        HNDL_LOCK(ldap_context);
+        krb5_put_ldap_handle(ldap_server_handle);
+        HNDL_UNLOCK(ldap_context);
     }
     return;
 }

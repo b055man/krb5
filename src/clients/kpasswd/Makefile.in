@@ -1,8 +1,5 @@
 mydir=clients$(S)kpasswd
 BUILDTOP=$(REL)..$(S)..
-PROG_LIBPATH=-L$(TOPLIBD)
-PROG_RPATH=$(KRB5_LIBDIR)
-DEFS=
 
 SRCS=kpasswd.c ksetpwd.c
 
@@ -32,9 +29,6 @@ clean-unix::
 
 install-all install-kdc install-server install-client install-unix::
 	$(INSTALL_PROGRAM) kpasswd $(DESTDIR)$(CLIENT_BINDIR)/`echo kpasswd|sed '$(transform)'`
-
-install-oldman::
-	$(INSTALL_DATA) $(srcdir)/kpasswd.M $(DESTDIR)$(CLIENT_MANDIR)/`echo kpasswd|sed '$(transform)'`.1;
 
 ##WIN32##all-windows:: $(KPWD)
 

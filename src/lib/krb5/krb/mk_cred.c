@@ -9,6 +9,7 @@
  *
  */
 #include "k5-int.h"
+#include "int-proto.h"
 #include "cleanup.h"
 #include "auth_con.h"
 
@@ -44,16 +45,9 @@ encrypt_credencpart(krb5_context context, krb5_cred_enc_part *pcredpart,
     }
 
     /* call the encryption routine */
-    retval = krb5_encrypt_keyhelper(context, pkey,
-                                    KRB5_KEYUSAGE_KRB_CRED_ENCPART,
-                                    scratch, pencdata);
-
-    if (retval) {
-        memset(pencdata->ciphertext.data, 0, pencdata->ciphertext.length);
-        free(pencdata->ciphertext.data);
-        pencdata->ciphertext.length = 0;
-        pencdata->ciphertext.data = 0;
-    }
+    retval = k5_encrypt_keyhelper(context, pkey,
+                                  KRB5_KEYUSAGE_KRB_CRED_ENCPART, scratch,
+                                  pencdata);
 
     memset(scratch->data, 0, scratch->length);
     krb5_free_data(context, scratch);

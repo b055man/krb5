@@ -90,6 +90,8 @@
 #define GSS_MECH_IAKERB_OID_LENGTH 6
 #define GSS_MECH_IAKERB_OID "\053\006\001\005\002\005"
 
+extern const gss_OID_set_desc * const kg_all_mechs;
+
 #define CKSUMTYPE_KG_CB         0x8003
 
 #define KG_TOK_CTX_AP_REQ       0x0100
@@ -204,6 +206,7 @@ typedef struct _krb5_gss_ctx_id_rec {
     unsigned int established : 1;
     unsigned int have_acceptor_subkey : 1;
     unsigned int seed_init : 1;  /* XXX tested but never actually set */
+    unsigned int terminated : 1;
     OM_uint32 gss_flags;
     unsigned char seed[16];
     krb5_gss_name_t here;
@@ -221,9 +224,9 @@ typedef struct _krb5_gss_ctx_id_rec {
     /* XXX these used to be signed.  the old spec is inspecific, and
        the new spec specifies unsigned.  I don't believe that the change
        affects the wire encoding. */
-    gssint_uint64 seq_send;
-    gssint_uint64 seq_recv;
-    void *seqstate;
+    uint64_t seq_send;
+    uint64_t seq_recv;
+    g_seqnum_state seqstate;
     krb5_context k5_context;
     krb5_auth_context auth_context;
     gss_OID_desc *mech_used;
@@ -403,6 +406,9 @@ gss_iov_buffer_t kg_locate_iov (gss_iov_buffer_desc *iov,
               int iov_count,
               OM_uint32 type);
 
+gss_iov_buffer_t kg_locate_header_iov(gss_iov_buffer_desc *iov, int iov_count,
+                                      int toktype);
+
 void kg_iov_msglen(gss_iov_buffer_desc *iov,
               int iov_count,
               size_t *data_length,
@@ -428,7 +434,8 @@ krb5_error_code kg_make_checksum_iov_v3(krb5_context context,
                 krb5_key key,
                 krb5_keyusage sign_usage,
                 gss_iov_buffer_desc *iov,
-                int iov_count);
+                int iov_count,
+                int toktype);
 
 krb5_error_code kg_verify_checksum_iov_v3(krb5_context context,
                 krb5_cksumtype type,
@@ -437,6 +444,7 @@ krb5_error_code kg_verify_checksum_iov_v3(krb5_context context,
                 krb5_keyusage sign_usage,
                 gss_iov_buffer_desc *iov,
                 int iov_count,
+                int toktype,
                 krb5_boolean *valid);
 
 OM_uint32 kg_seal_iov (OM_uint32 *minor_status,
@@ -462,7 +470,8 @@ OM_uint32 kg_seal_iov_length(OM_uint32 *minor_status,
            gss_qop_t qop_req,
            int *conf_state,
            gss_iov_buffer_desc *iov,
-           int iov_count);
+           int iov_count,
+           int toktype);
 
 krb5_cryptotype kg_translate_flag_iov(OM_uint32 type);
 
@@ -700,12 +709,36 @@ OM_uint32 KRB5_CALLCONV krb5_gss_get_mic
  gss_buffer_t                /* message_token */
 );
 
+OM_uint32 KRB5_CALLCONV krb5_gss_get_mic_iov
+(OM_uint32 *,                /* minor_status */
+ gss_ctx_id_t,               /* context_handle */
+ gss_qop_t,                  /* qop_req */
+ gss_iov_buffer_desc *,      /* iov */
+ int                         /* iov_count */
+);
+
+OM_uint32 KRB5_CALLCONV krb5_gss_get_mic_iov_length
+(OM_uint32 *,                /* minor_status */
+ gss_ctx_id_t,               /* context_handle */
+ gss_qop_t,                  /* qop_req */
+ gss_iov_buffer_desc *,      /* iov */
+ int                         /* iov_count */
+);
+
 OM_uint32 KRB5_CALLCONV krb5_gss_verify_mic
 (OM_uint32 *,           /* minor_status */
  gss_ctx_id_t,               /* context_handle */
  gss_buffer_t,               /* message_buffer */
  gss_buffer_t,               /* message_token */
  gss_qop_t *                 /* qop_state */
+);
+
+OM_uint32 KRB5_CALLCONV krb5_gss_verify_mic_iov
+(OM_uint32 *,                /* minor_status */
+ gss_ctx_id_t,               /* context_handle */
+ gss_qop_t *,                /* qop_state */
+ gss_iov_buffer_desc *,      /* iov */
+ int                         /* iov_count */
 );
 
 OM_uint32 KRB5_CALLCONV krb5_gss_wrap
@@ -1204,7 +1237,7 @@ data_to_gss(krb5_data *input_k5data, gss_buffer_t output_buffer)
 {
     krb5_error_code code = 0;
     output_buffer->length = input_k5data->length;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(DEBUG_GSSALLOC)
     if (output_buffer->length > 0) {
         output_buffer->value = gssalloc_malloc(output_buffer->length);
         if (output_buffer->value)
@@ -1227,8 +1260,10 @@ data_to_gss(krb5_data *input_k5data, gss_buffer_t output_buffer)
 
 /* Credential store extensions */
 
+#define KRB5_CS_CLI_KEYTAB_URN "client_keytab"
 #define KRB5_CS_KEYTAB_URN "keytab"
 #define KRB5_CS_CCACHE_URN "ccache"
+#define KRB5_CS_RCACHE_URN "rcache"
 
 OM_uint32
 kg_value_from_cred_store(gss_const_key_value_set_t cred_store,
@@ -1257,5 +1292,17 @@ krb5_gss_store_cred_into(
     gss_const_key_value_set_t, /* cred_store */
     gss_OID_set *,             /* elements_stored */
     gss_cred_usage_t *);       /* cred_usage_stored */
+
+OM_uint32 KRB5_CALLCONV
+krb5_gss_export_cred(OM_uint32 *minor_status, gss_cred_id_t cred_handle,
+                     gss_buffer_t token);
+
+OM_uint32 KRB5_CALLCONV
+krb5_gss_import_cred(OM_uint32 *minor_status, gss_buffer_t token,
+                     gss_cred_id_t *cred_handle);
+
+/* Magic string to identify exported krb5 GSS credentials.  Increment this if
+ * the format changes. */
+#define CRED_EXPORT_MAGIC "K5C1"
 
 #endif /* _GSSAPIP_KRB5_H_ */

@@ -1,8 +1,5 @@
 /* -*- mode: c; c-basic-offset: 4; indent-tabs-mode: nil -*- */
-#include <assert.h>
 
-#include "autoconf.h"
-#include "com_err.h"
 #include "k5-int.h"
 
 #if defined(_WIN32) || defined(USE_CCAPI)
@@ -28,7 +25,7 @@ int krb5int_lib_init(void)
 {
     int err;
 
-    krb5int_set_error_info_callout_fn (error_message);
+    k5_set_error_info_callout_fn(error_message);
 
 #ifdef SHOW_INITFINI_FUNCS
     printf("krb5int_lib_init\n");
@@ -103,7 +100,7 @@ void krb5int_lib_fini(void)
     remove_error_table(&et_asn1_error_table);
     remove_error_table(&et_k524_error_table);
 
-    krb5int_set_error_info_callout_fn (0);
+    k5_set_error_info_callout_fn(NULL);
 }
 
 /* Still exists because it went into the export list on Windows.  But

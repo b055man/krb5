@@ -292,8 +292,7 @@ k5_ad_find_module(krb5_context kcontext,
             continue;
 
         /* check for name match */
-        if (strlen(module->name) != name->length ||
-            memcmp(module->name, name->data, name->length) != 0)
+        if (!data_eq_string(*name, module->name))
             continue;
 
         ret = module;
@@ -408,7 +407,7 @@ krb5_authdata_context_init(krb5_context kcontext,
     }
 
     context = calloc(1, sizeof(*context));
-    if (kcontext == NULL) {
+    if (context == NULL) {
         code = ENOMEM;
         goto cleanup;
     }

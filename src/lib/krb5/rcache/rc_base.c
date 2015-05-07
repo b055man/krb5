@@ -44,10 +44,8 @@ krb5_error_code
 krb5_rc_register_type(krb5_context context, const krb5_rc_ops *ops)
 {
     struct krb5_rc_typelist *t;
-    krb5_error_code err;
-    err = k5_mutex_lock(&rc_typelist_lock);
-    if (err)
-        return err;
+
+    k5_mutex_lock(&rc_typelist_lock);
     for (t = typehead;t && strcmp(t->ops->type,ops->type);t = t->next)
         ;
     if (t) {
@@ -67,7 +65,8 @@ krb5_rc_register_type(krb5_context context, const krb5_rc_ops *ops)
 }
 
 krb5_error_code
-krb5_rc_resolve_type(krb5_context context, krb5_rcache *idptr, char *type)
+krb5_rc_resolve_type(krb5_context context, krb5_rcache *idptr,
+                     const char *type)
 {
     struct krb5_rc_typelist *t;
     krb5_error_code err;
@@ -76,9 +75,7 @@ krb5_rc_resolve_type(krb5_context context, krb5_rcache *idptr, char *type)
     *idptr = NULL;
 
     /* Find the named type in the list. */
-    err = k5_mutex_lock(&rc_typelist_lock);
-    if (err)
-        return err;
+    k5_mutex_lock(&rc_typelist_lock);
     for (t = typehead; t && strcmp(t->ops->type, type); t = t->next)
         ;
     k5_mutex_unlock(&rc_typelist_lock);
@@ -150,7 +147,7 @@ krb5_rc_default(krb5_context context, krb5_rcache *idptr)
 
 krb5_error_code
 krb5_rc_resolve_full(krb5_context context, krb5_rcache *idptr,
-                     char *string_name)
+                     const char *string_name)
 {
     char *type;
     char *residual;

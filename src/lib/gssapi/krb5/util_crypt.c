@@ -54,8 +54,6 @@
 #include <memory.h>
 #endif
 
-static const char kg_arcfour_l40[] = "fortybits";
-
 static krb5_error_code
 kg_copy_keys(krb5_context context, krb5_gss_ctx_id_rec *ctx, krb5_key subkey)
 {
@@ -624,6 +622,17 @@ kg_locate_iov(gss_iov_buffer_desc *iov, int iov_count, OM_uint32 type)
     }
 
     return p;
+}
+
+/* Return the IOV where the GSSAPI token header should be placed (and possibly
+ * the checksum as well, depending on the token type). */
+gss_iov_buffer_t
+kg_locate_header_iov(gss_iov_buffer_desc *iov, int iov_count, int toktype)
+{
+    if (toktype == KG_TOK_MIC_MSG)
+        return kg_locate_iov(iov, iov_count, GSS_IOV_BUFFER_TYPE_MIC_TOKEN);
+    else
+        return kg_locate_iov(iov, iov_count, GSS_IOV_BUFFER_TYPE_HEADER);
 }
 
 void

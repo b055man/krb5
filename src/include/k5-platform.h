@@ -38,8 +38,10 @@
  * + strlcpy/strlcat
  * + fnmatch
  * + [v]asprintf
+ * + strerror_r
  * + mkstemp
  * + zap (support function; macro is in k5-int.h)
+ * + constant time memory comparison
  * + path manipulation
  * + _, N_, dgettext, bindtextdomain (for localization)
  */
@@ -51,6 +53,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -347,7 +350,19 @@ typedef struct { int error; unsigned char did_run; } k5_init_t;
 
 
 
-#if defined(USE_LINKER_FINI_OPTION) || defined(_WIN32)
+#if !defined(SHARED) && !defined(_WIN32)
+
+/*
+ * In this case, we just don't care about finalization.
+ *
+ * The code will still define the function, but we won't do anything
+ * with it.  Annoying: This may generate unused-function warnings.
+ */
+
+# define MAKE_FINI_FUNCTION(NAME)               \
+        static void NAME(void)
+
+#elif defined(USE_LINKER_FINI_OPTION) || defined(_WIN32)
 /* If we're told the linker option will be used, it doesn't really
    matter what compiler we're using.  Do it the same way
    regardless.  */
@@ -391,50 +406,14 @@ typedef struct { int error; unsigned char did_run; } k5_init_t;
 # define MAKE_FINI_FUNCTION(NAME)       \
         static void NAME(void) __attribute__((destructor))
 
-#elif !defined(SHARED)
-
-/* In this case, we just don't care about finalization.
-
-   The code will still define the function, but we won't do anything
-   with it.  Annoying: This may generate unused-function warnings.  */
-
-# define MAKE_FINI_FUNCTION(NAME)       \
-        static void NAME(void)
-
 #else
 
 # error "Don't know how to do unload-time finalization for this configuration."
 
 #endif
 
-
-/* 64-bit support: krb5_ui_8 and krb5_int64.
-
-   This should move to krb5.h eventually, but without the namespace
-   pollution from the autoconf macros.  */
-#if defined(HAVE_STDINT_H) || defined(HAVE_INTTYPES_H)
-# ifdef HAVE_STDINT_H
-#  include <stdint.h>
-# endif
-# ifdef HAVE_INTTYPES_H
-#  include <inttypes.h>
-# endif
-# define INT64_TYPE int64_t
-# define UINT64_TYPE uint64_t
-#elif defined(_WIN32)
-# define INT64_TYPE signed __int64
-# define UINT64_TYPE unsigned __int64
-#else /* not Windows, and neither stdint.h nor inttypes.h */
-# define INT64_TYPE signed long long
-# define UINT64_TYPE unsigned long long
-#endif
-
 #ifndef SIZE_MAX
 # define SIZE_MAX ((size_t)((size_t)0 - 1))
-#endif
-
-#ifndef UINT64_MAX
-# define UINT64_MAX ((UINT64_TYPE)((UINT64_TYPE)0 - 1))
 #endif
 
 #ifdef _WIN32
@@ -594,7 +573,7 @@ store_32_be (unsigned int val, void *vp)
 #endif
 }
 static inline void
-store_64_be (UINT64_TYPE val, void *vp)
+store_64_be (uint64_t val, void *vp)
 {
     unsigned char *p = (unsigned char *) vp;
 #if defined(__GNUC__) && defined(K5_BE) && !defined(__cplusplus)
@@ -638,7 +617,7 @@ load_32_be (const void *cvp)
             | ((uint32_t) p[0] << 24));
 #endif
 }
-static inline UINT64_TYPE
+static inline uint64_t
 load_64_be (const void *cvp)
 {
     const unsigned char *p = (const unsigned char *) cvp;
@@ -647,7 +626,7 @@ load_64_be (const void *cvp)
 #elif defined(__GNUC__) && defined(K5_LE) && defined(SWAP64) && !defined(__cplusplus)
     return GETSWAPPED(64,p);
 #else
-    return ((UINT64_TYPE)load_32_be(p) << 32) | load_32_be(p+4);
+    return ((uint64_t)load_32_be(p) << 32) | load_32_be(p+4);
 #endif
 }
 static inline void
@@ -679,7 +658,7 @@ store_32_le (unsigned int val, void *vp)
 #endif
 }
 static inline void
-store_64_le (UINT64_TYPE val, void *vp)
+store_64_le (uint64_t val, void *vp)
 {
     unsigned char *p = (unsigned char *) vp;
 #if defined(__GNUC__) && defined(K5_LE) && !defined(__cplusplus)
@@ -721,7 +700,7 @@ load_32_le (const void *cvp)
     return (p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
 #endif
 }
-static inline UINT64_TYPE
+static inline uint64_t
 load_64_le (const void *cvp)
 {
     const unsigned char *p = (const unsigned char *) cvp;
@@ -730,17 +709,12 @@ load_64_le (const void *cvp)
 #elif defined(__GNUC__) && defined(K5_BE) && defined(SWAP64) && !defined(__cplusplus)
     return GETSWAPPED(64,p);
 #else
-    return ((UINT64_TYPE)load_32_le(p+4) << 32) | load_32_le(p);
+    return ((uint64_t)load_32_le(p+4) << 32) | load_32_le(p);
 #endif
 }
 
-#ifdef _WIN32
-#define UINT16_TYPE unsigned __int16
-#define UINT32_TYPE unsigned __int32
-#else
 #define UINT16_TYPE uint16_t
 #define UINT32_TYPE uint32_t
-#endif
 
 static inline void
 store_16_n (unsigned int val, void *vp)
@@ -755,9 +729,9 @@ store_32_n (unsigned int val, void *vp)
     memcpy(vp, &n, 4);
 }
 static inline void
-store_64_n (UINT64_TYPE val, void *vp)
+store_64_n (uint64_t val, void *vp)
 {
-    UINT64_TYPE n = val;
+    uint64_t n = val;
     memcpy(vp, &n, 8);
 }
 static inline unsigned short
@@ -774,10 +748,10 @@ load_32_n (const void *p)
     memcpy(&n, p, 4);
     return n;
 }
-static inline UINT64_TYPE
+static inline uint64_t
 load_64_n (const void *p)
 {
-    UINT64_TYPE n;
+    uint64_t n;
     memcpy(&n, p, 8);
     return n;
 }
@@ -785,8 +759,8 @@ load_64_n (const void *p)
 #undef UINT32_TYPE
 
 /* Assume for simplicity that these swaps are identical.  */
-static inline UINT64_TYPE
-k5_htonll (UINT64_TYPE val)
+static inline uint64_t
+k5_htonll (uint64_t val)
 {
 #ifdef K5_BE
     return val;
@@ -796,8 +770,8 @@ k5_htonll (UINT64_TYPE val)
     return load_64_be ((unsigned char *)&val);
 #endif
 }
-static inline UINT64_TYPE
-k5_ntohll (UINT64_TYPE val)
+static inline uint64_t
+k5_ntohll (uint64_t val)
 {
     return k5_htonll (val);
 }
@@ -865,22 +839,19 @@ k5_ntohll (UINT64_TYPE val)
    anyways.  */
 
 #if 0
-static inline int
+static inline void
 set_cloexec_fd(int fd)
 {
 #if defined(F_SETFD)
 # ifdef FD_CLOEXEC
-    if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0)
-        return errno;
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
 # else
-    if (fcntl(fd, F_SETFD, 1) != 0)
-        return errno;
+    (void)fcntl(fd, F_SETFD, 1);
 # endif
 #endif
-    return 0;
 }
 
-static inline int
+static inline void
 set_cloexec_file(FILE *f)
 {
     return set_cloexec_fd(fileno(f));
@@ -892,12 +863,12 @@ set_cloexec_file(FILE *f)
    with F_SETFD.  */
 #ifdef F_SETFD
 # ifdef FD_CLOEXEC
-#  define set_cloexec_fd(FD)    (fcntl((FD), F_SETFD, FD_CLOEXEC) ? errno : 0)
+#  define set_cloexec_fd(FD)    ((void)fcntl((FD), F_SETFD, FD_CLOEXEC))
 # else
-#  define set_cloexec_fd(FD)    (fcntl((FD), F_SETFD, 1) ? errno : 0)
+#  define set_cloexec_fd(FD)    ((void)fcntl((FD), F_SETFD, 1))
 # endif
 #else
-# define set_cloexec_fd(FD)     ((FD),0)
+# define set_cloexec_fd(FD)     ((void)(FD))
 #endif
 #define set_cloexec_file(F)     set_cloexec_fd(fileno(F))
 #endif
@@ -1028,6 +999,11 @@ extern int asprintf(char **, const char *, ...)
 #define SNPRINTF_OVERFLOW(result, size) \
     ((unsigned int)(result) >= (size_t)(size))
 
+#if defined(_WIN32) || !defined(HAVE_STRERROR_R) || defined(STRERROR_R_CHAR_P)
+#define strerror_r k5_strerror_r
+#endif
+extern int k5_strerror_r(int errnum, char *buf, size_t buflen);
+
 #ifndef HAVE_MKSTEMP
 extern int krb5int_mkstemp(char *);
 #define mkstemp krb5int_mkstemp
@@ -1039,6 +1015,13 @@ extern int krb5int_gettimeofday(struct timeval *tp, void *ignore);
 #endif
 
 extern void krb5int_zap(void *ptr, size_t len);
+
+/*
+ * Return 0 if the n-byte memory regions p1 and p2 are equal, and nonzero if
+ * they are not.  The function is intended to take the same amount of time
+ * regardless of how many bytes of p1 and p2 are equal.
+ */
+int k5_bcmp(const void *p1, const void *p2, size_t n);
 
 /*
  * Split a path into parent directory and basename.  Either output parameter

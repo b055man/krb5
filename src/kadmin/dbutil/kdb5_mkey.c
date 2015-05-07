@@ -4,14 +4,13 @@
  * Use is subject to license terms.
  */
 
-#include <stdio.h>
-#include <time.h>
 #include <k5-int.h>
 #include <kdb.h>
 #include <kadm5/server_internal.h>
 #include <kadm5/admin.h>
 #include <adm_proto.h>
 #include "kdb5_util.h"
+#include <time.h>
 
 #if defined(HAVE_COMPILE) && defined(HAVE_STEP)
 #define SOLARIS_REGEXPS
@@ -73,7 +72,7 @@ add_new_mkey(krb5_context context, krb5_db_entry *master_entry,
     krb5_error_code retval = 0;
     int old_key_data_count, i;
     krb5_kvno new_mkey_kvno;
-    krb5_key_data tmp_key_data, *old_key_data;
+    krb5_key_data tmp_key_data;
     krb5_mkey_aux_node  *mkey_aux_data_head = NULL, **mkey_aux_data;
     krb5_keylist_node  *keylist_node;
     krb5_keylist_node *master_keylist = krb5_db_mkey_list_alias(context);
@@ -84,9 +83,7 @@ add_new_mkey(krb5_context context, krb5_db_entry *master_entry,
     if (use_mkvno != 0 && new_mkey_kvno != use_mkvno)
         return (KRB5_KDB_KVNONOMATCH);
 
-    /* save the old keydata */
     old_key_data_count = master_entry->n_key_data;
-    old_key_data = master_entry->key_data;
 
     /* alloc enough space to hold new and existing key_data */
     /*
@@ -339,7 +336,7 @@ kdb5_add_mkey(int argc, char *argv[])
                                           &new_mkeyblock,
                                           mkey_password);
         if (retval) {
-            com_err(progname, errno, _("while storing key"));
+            com_err(progname, retval, _("while storing key"));
             printf(_("Warning: couldn't stash master key.\n"));
         }
     }
@@ -612,22 +609,12 @@ kdb5_list_mkeys(int argc, char *argv[])
         goto cleanup_return;
     }
 
-    if (actkvno_list == NULL) {
-        act_kvno = master_entry->key_data[0].key_data_kvno;
-    } else {
-        retval = krb5_dbe_find_act_mkey(util_context, actkvno_list, &act_kvno,
-                                        &act_mkey);
-        if (retval == KRB5_KDB_NOACTMASTERKEY) {
-            /* Maybe we went through a time warp, and the only keys
-               with activation dates have them set in the future?  */
-            com_err(progname, retval, "");
-            /* Keep going.  */
-            act_kvno = -1;
-        } else if (retval != 0) {
-            com_err(progname, retval, _("while looking up active master key"));
-            exit_status++;
-            goto cleanup_return;
-        }
+    retval = krb5_dbe_find_act_mkey(util_context, actkvno_list, &act_kvno,
+                                    &act_mkey);
+    if (retval != 0) {
+        com_err(progname, retval, _("while looking up active master key"));
+        exit_status++;
+        goto cleanup_return;
     }
 
     printf("Master keys for Principal: %s\n", mkey_fullname);
@@ -642,40 +629,28 @@ kdb5_list_mkeys(int argc, char *argv[])
             goto cleanup_return;
         }
 
-        if (actkvno_list != NULL) {
-            act_time = -1; /* assume actkvno entry not found */
-            for (cur_actkvno = actkvno_list; cur_actkvno != NULL;
-                 cur_actkvno = cur_actkvno->next) {
-                if (cur_actkvno->act_kvno == cur_kb_node->kvno) {
-                    act_time = cur_actkvno->act_time;
-                    break;
-                }
-            }
-        } else {
-            /*
-             * mkey princ doesn't have an active knvo list so assume the current
-             * key is active now
-             */
-            if ((retval = krb5_timeofday(util_context, &act_time))) {
-                com_err(progname, retval, _("while getting current time"));
-                exit_status++;
-                goto cleanup_return;
+        act_time = -1; /* assume actkvno entry not found */
+        for (cur_actkvno = actkvno_list; cur_actkvno != NULL;
+             cur_actkvno = cur_actkvno->next) {
+            if (cur_actkvno->act_kvno == cur_kb_node->kvno) {
+                act_time = cur_actkvno->act_time;
+                break;
             }
         }
 
         if (cur_kb_node->kvno == act_kvno) {
             /* * indicates kvno is currently active */
             retval = asprintf(&output_str,
-                              _("KNVO: %d, Enctype: %s, Active on: %s *\n"),
+                              _("KVNO: %d, Enctype: %s, Active on: %s *\n"),
                               cur_kb_node->kvno, enctype, strdate(act_time));
         } else {
             if (act_time != -1) {
                 retval = asprintf(&output_str,
-                                  _("KNVO: %d, Enctype: %s, Active on: %s\n"),
+                                  _("KVNO: %d, Enctype: %s, Active on: %s\n"),
                                   cur_kb_node->kvno, enctype, strdate(act_time));
             } else {
                 retval = asprintf(&output_str,
-                                  _("KNVO: %d, Enctype: %s, No activate time "
+                                  _("KVNO: %d, Enctype: %s, No activate time "
                                     "set\n"), cur_kb_node->kvno, enctype);
             }
         }
@@ -935,8 +910,9 @@ kdb5_update_princ_encryption(int argc, char *argv[])
     char *msg;
 #endif
     char *regexp = NULL;
-    krb5_keyblock *tmp_keyblock = NULL;
+    krb5_keyblock *act_mkey;
     krb5_keylist_node *master_keylist = krb5_db_mkey_list_alias(util_context);
+    krb5_flags iterflags = 0;
 
     while ((optchar = getopt(argc, argv, "fnv")) != -1) {
         switch (optchar) {
@@ -1020,19 +996,14 @@ kdb5_update_princ_encryption(int argc, char *argv[])
         goto cleanup;
     }
 
-    /* Master key is always stored encrypted in the latest version of
-       itself.  */
-    new_mkvno = krb5_db_get_key_data_kvno(util_context,
-                                          master_entry->n_key_data,
-                                          master_entry->key_data);
-
-    retval = krb5_dbe_find_mkey(util_context, master_entry, &tmp_keyblock);
+    retval = krb5_dbe_find_act_mkey(util_context, actkvno_list, &new_mkvno,
+                                    &act_mkey);
     if (retval) {
-        com_err(progname, retval, _("retrieving the most recent master key"));
+        com_err(progname, retval, _("while looking up active master key"));
         exit_status++;
         goto cleanup;
     }
-    new_master_keyblock = *tmp_keyblock;
+    new_master_keyblock = *act_mkey;
 
     if (!force &&
         !data.dry_run &&
@@ -1052,8 +1023,14 @@ kdb5_update_princ_encryption(int argc, char *argv[])
         }
     }
 
+    if (!data.dry_run) {
+        /* Grab a write lock so we don't have to upgrade to a write lock and
+         * reopen the DB while iterating. */
+        iterflags = KRB5_DB_ITER_WRITE;
+    }
+
     retval = krb5_db_iterate(util_context, name_pattern,
-                             update_princ_encryption_1, &data);
+                             update_princ_encryption_1, &data, iterflags);
     /* If exit_status is set, then update_princ_encryption_1 already
        printed a message.  */
     if (retval != 0 && exit_status == 0) {
@@ -1227,7 +1204,7 @@ kdb5_purge_mkeys(int argc, char *argv[])
     if ((retval = krb5_db_iterate(util_context,
                                   NULL,
                                   find_mkvnos_in_use,
-                                  (krb5_pointer) &args))) {
+                                  (krb5_pointer) &args, 0))) {
         com_err(progname, retval, _("while finding master keys in use"));
         exit_status++;
         goto cleanup_return;
@@ -1237,10 +1214,10 @@ kdb5_purge_mkeys(int argc, char *argv[])
      * princ entries
      */
     if (dry_run) {
-        printf(_("Would purge the follwing master key(s) from %s:\n"),
+        printf(_("Would purge the following master key(s) from %s:\n"),
                mkey_fullname);
     } else {
-        printf(_("Purging the follwing master key(s) from %s:\n"),
+        printf(_("Purging the following master key(s) from %s:\n"),
                mkey_fullname);
     }
 

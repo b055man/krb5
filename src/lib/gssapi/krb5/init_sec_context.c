@@ -639,6 +639,17 @@ kg_new_connection(
     if (code != 0)
         goto cleanup;
 
+    if (!(ctx->gss_flags & GSS_C_MUTUAL_FLAG)) {
+        /* There will be no AP-REP, so set up sequence state now. */
+        ctx->seq_recv = ctx->seq_send;
+        code = g_seqstate_init(&ctx->seqstate, ctx->seq_recv,
+                               (ctx->gss_flags & GSS_C_REPLAY_FLAG) != 0,
+                               (ctx->gss_flags & GSS_C_SEQUENCE_FLAG) != 0,
+                               ctx->proto);
+        if (code != 0)
+            goto cleanup;
+    }
+
     /* compute time_rec */
     if (time_rec) {
         if ((code = krb5_timeofday(context, &now)))
@@ -663,10 +674,6 @@ kg_new_connection(
         ctx->established = 0;
         major_status = GSS_S_CONTINUE_NEEDED;
     } else {
-        ctx->seq_recv = ctx->seq_send;
-        g_order_init(&(ctx->seqstate), ctx->seq_recv,
-                     (ctx->gss_flags & GSS_C_REPLAY_FLAG) != 0,
-                     (ctx->gss_flags & GSS_C_SEQUENCE_FLAG) != 0, ctx->proto);
         ctx->gss_flags |= GSS_C_PROT_READY_FLAG;
         ctx->established = 1;
         major_status = GSS_S_COMPLETE;
@@ -811,9 +818,14 @@ mutual_auth(
 
     /* store away the sequence number */
     ctx->seq_recv = ap_rep_data->seq_number;
-    g_order_init(&(ctx->seqstate), ctx->seq_recv,
-                 (ctx->gss_flags & GSS_C_REPLAY_FLAG) != 0,
-                 (ctx->gss_flags & GSS_C_SEQUENCE_FLAG) !=0, ctx->proto);
+    code = g_seqstate_init(&ctx->seqstate, ctx->seq_recv,
+                           (ctx->gss_flags & GSS_C_REPLAY_FLAG) != 0,
+                           (ctx->gss_flags & GSS_C_SEQUENCE_FLAG) != 0,
+                           ctx->proto);
+    if (code) {
+        krb5_free_ap_rep_enc_part(context, ap_rep_data);
+        goto fail;
+    }
 
     if (ap_rep_data->subkey != NULL &&
         (ctx->proto == 1 || (ctx->gss_flags & GSS_C_DCE_STYLE) ||
@@ -1014,9 +1026,7 @@ krb5_gss_init_context (krb5_context *ctxp)
     if (err)
         return err;
 #ifndef _WIN32
-    err = k5_mutex_lock(&kg_kdc_flag_mutex);
-    if (err)
-        return err;
+    k5_mutex_lock(&kg_kdc_flag_mutex);
     is_kdc = kdc_flag;
     k5_mutex_unlock(&kg_kdc_flag_mutex);
 
@@ -1041,10 +1051,7 @@ krb5int_gss_use_kdc_context(OM_uint32 *minor_status,
     err = gss_krb5int_initialize_library();
     if (err)
         return err;
-    *minor_status = k5_mutex_lock(&kg_kdc_flag_mutex);
-    if (*minor_status) {
-        return GSS_S_FAILURE;
-    }
+    k5_mutex_lock(&kg_kdc_flag_mutex);
     kdc_flag = 1;
     k5_mutex_unlock(&kg_kdc_flag_mutex);
     return GSS_S_COMPLETE;

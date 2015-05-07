@@ -28,6 +28,7 @@
 
 #include "k5-int.h"
 #include "os-proto.h"
+#include "../krb/int-proto.h"
 #include "prof_int.h"        /* XXX for profile_copy, not public yet */
 
 #if defined(_WIN32)
@@ -233,7 +234,7 @@ free_filespecs(profile_filespec_t *files)
 
 /* This function is needed by KfM's KerberosPreferences API
  * because it needs to be able to specify "secure" */
-krb5_error_code
+static krb5_error_code
 os_get_default_config_files(profile_filespec_t **pfiles, krb5_boolean secure)
 {
     profile_filespec_t* files;
@@ -377,10 +378,6 @@ os_init_paths(krb5_context ctx, krb5_boolean kdc)
     profile_filespec_t *files = 0;
     krb5_boolean secure = ctx->profile_secure;
 
-#ifdef KRB5_DNS_LOOKUP
-    ctx->profile_in_memory = 0;
-#endif /* KRB5_DNS_LOOKUP */
-
     retval = os_get_default_config_files(&files, secure);
 
     if (retval == 0 && kdc)
@@ -390,14 +387,9 @@ os_init_paths(krb5_context ctx, krb5_boolean kdc)
         retval = profile_init_flags((const_profile_filespec_t *) files,
                                     PROFILE_INIT_ALLOW_MODULE, &ctx->profile);
 
-#ifdef KRB5_DNS_LOOKUP
-        /* if none of the filenames can be opened use an empty profile */
-        if (retval == ENOENT) {
+        /* If none of the filenames can be opened, use an empty profile. */
+        if (retval == ENOENT)
             retval = profile_init(NULL, &ctx->profile);
-            if (!retval)
-                ctx->profile_in_memory = 1;
-        }
-#endif /* KRB5_DNS_LOOKUP */
     }
 
     if (files)
@@ -420,7 +412,7 @@ os_init_paths(krb5_context ctx, krb5_boolean kdc)
 }
 
 krb5_error_code
-krb5_os_init_context(krb5_context ctx, profile_t profile, krb5_flags flags)
+k5_os_init_context(krb5_context ctx, profile_t profile, krb5_flags flags)
 {
     krb5_os_context os_ctx;
     krb5_error_code    retval = 0;
@@ -436,7 +428,6 @@ krb5_os_init_context(krb5_context ctx, profile_t profile, krb5_flags flags)
     os_ctx->os_flags = 0;
     os_ctx->default_ccname = 0;
 
-    ctx->vtbl = 0;
     PLUGIN_DIR_INIT(&ctx->libkrb5_plugins);
     ctx->preauth_context = NULL;
 
@@ -497,31 +488,8 @@ krb5_free_config_files(char **filenames)
     free_filespecs(filenames);
 }
 
-
-krb5_error_code
-krb5_secure_config_files(krb5_context ctx)
-{
-    /* Obsolete interface; always return an error.
-     *  This function should be removed next time a major version
-     *  number change happens.
-     */
-    krb5_error_code retval = 0;
-
-    if (ctx->profile) {
-        profile_release(ctx->profile);
-        ctx->profile = 0;
-    }
-
-    ctx->profile_secure = TRUE;
-    retval = os_init_paths(ctx, FALSE);
-    if (retval)
-        return retval;
-
-    return KRB5_OBSOLETE_FN;
-}
-
 void
-krb5_os_free_context(krb5_context ctx)
+k5_os_free_context(krb5_context ctx)
 {
     krb5_os_context os_ctx;
 
@@ -540,7 +508,7 @@ krb5_os_free_context(krb5_context ctx)
     }
 
     if (ctx->preauth_context) {
-        krb5_free_preauth_context(ctx);
+        k5_free_preauth_context(ctx);
         ctx->preauth_context = NULL;
     }
     krb5int_close_plugin_dirs (&ctx->libkrb5_plugins);

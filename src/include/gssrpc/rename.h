@@ -125,10 +125,12 @@
 #define svcauth_gssapi_set_names	gssrpc_svcauth_gssapi_set_names
 #define svcauth_gssapi_unset_names	gssrpc_svcauth_gssapi_unset_names
 #define svcauth_gssapi_set_log_badauth_func	gssrpc_svcauth_gssapi_set_log_badauth_func
+#define svcauth_gssapi_set_log_badauth2_func	gssrpc_svcauth_gssapi_set_log_badauth2_func
 #define svcauth_gssapi_set_log_badverf_func	gssrpc_svcauth_gssapi_set_log_badverf_func
 #define svcauth_gssapi_set_log_miscerr_func	gssrpc_svcauth_gssapi_set_log_miscerr_func
 
 #define svcauth_gss_set_log_badauth_func	gssrpc_svcauth_gss_set_log_badauth_func
+#define svcauth_gss_set_log_badauth2_func	gssrpc_svcauth_gss_set_log_badauth2_func
 #define svcauth_gss_set_log_badverf_func	gssrpc_svcauth_gss_set_log_badverf_func
 #define svcauth_gss_set_log_miscerr_func	gssrpc_svcauth_gss_set_log_miscerr_func
 
@@ -175,6 +177,7 @@
 
 #define get_myaddress		gssrpc_get_myaddress
 #define bindresvport		gssrpc_bindresvport
+#define bindresvport_sa		gssrpc_bindresvport_sa
 #define callrpc			gssrpc_callrpc
 #define getrpcport		gssrpc_getrpcport
 

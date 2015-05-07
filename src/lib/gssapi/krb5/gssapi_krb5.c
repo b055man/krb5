@@ -160,14 +160,14 @@ const gss_OID_desc * const GSS_KRB5_NT_PRINCIPAL_NAME = krb5_gss_oid_array+5;
 static const gss_OID_set_desc oidsets[] = {
     {1, (gss_OID) krb5_gss_oid_array+0}, /* RFC OID */
     {1, (gss_OID) krb5_gss_oid_array+1}, /* pre-RFC OID */
-    {4, (gss_OID) krb5_gss_oid_array+0}, /* includes wrong OID & IAKERB */
-    {1, (gss_OID) krb5_gss_oid_array+2},
-    {3, (gss_OID) krb5_gss_oid_array+0},
+    {3, (gss_OID) krb5_gss_oid_array+0}, /* all names for krb5 mech */
+    {4, (gss_OID) krb5_gss_oid_array+0}, /* all krb5 names and IAKERB */
 };
 
 const gss_OID_set_desc * const gss_mech_set_krb5 = oidsets+0;
 const gss_OID_set_desc * const gss_mech_set_krb5_old = oidsets+1;
 const gss_OID_set_desc * const gss_mech_set_krb5_both = oidsets+2;
+const gss_OID_set_desc * const kg_all_mechs = oidsets+3;
 
 g_set kg_vdb = G_SET_INIT;
 
@@ -369,7 +369,7 @@ krb5_gss_inquire_sec_context_by_oid (OM_uint32 *minor_status,
 
     ctx = (krb5_gss_ctx_id_rec *) context_handle;
 
-    if (!ctx->established)
+    if (ctx->terminated || !ctx->established)
         return GSS_S_NO_CONTEXT;
 
     for (i = 0; i < sizeof(krb5_gss_inquire_sec_context_by_oid_ops)/
@@ -405,7 +405,6 @@ krb5_gss_inquire_cred_by_oid(OM_uint32 *minor_status,
                              gss_buffer_set_t *data_set)
 {
     OM_uint32 major_status = GSS_S_FAILURE;
-    krb5_gss_cred_id_t cred;
 #if 0
     size_t i;
 #endif
@@ -430,8 +429,6 @@ krb5_gss_inquire_cred_by_oid(OM_uint32 *minor_status,
     major_status = krb5_gss_validate_cred(minor_status, cred_handle);
     if (GSS_ERROR(major_status))
         return major_status;
-
-    cred = (krb5_gss_cred_id_t) cred_handle;
 
 #if 0
     for (i = 0; i < sizeof(krb5_gss_inquire_cred_by_oid_ops)/
@@ -800,15 +797,12 @@ krb5_gss_authorize_localname(OM_uint32 *minor,
         return GSS_S_FAILURE;
     }
 
-    user = k5alloc(local_user->length + 1, &code);
+    user = k5memdup0(local_user->value, local_user->length, &code);
     if (user == NULL) {
         *minor = code;
         krb5_free_context(context);
         return GSS_S_FAILURE;
     }
-
-    memcpy(user, local_user->value, local_user->length);
-    user[local_user->length] = '\0';
 
     user_ok = krb5_kuserok(context, kname->princ, user);
 
@@ -899,14 +893,15 @@ static struct gss_config krb5_mechanism = {
     krb5_gss_inquire_attrs_for_mech,
     krb5_gss_acquire_cred_from,
     krb5_gss_store_cred_into,
-};
-
-static struct gss_config_ext krb5_mechanism_ext = {
     krb5_gss_acquire_cred_with_password,
-};
-
-static struct gss_config_ext iakerb_mechanism_ext = {
-    iakerb_gss_acquire_cred_with_password,
+    krb5_gss_export_cred,
+    krb5_gss_import_cred,
+    NULL,               /* import_sec_context_by_mech */
+    NULL,               /* import_name_by_mech */
+    NULL,               /* import_cred_by_mech */
+    krb5_gss_get_mic_iov,
+    krb5_gss_verify_mic_iov,
+    krb5_gss_get_mic_iov_length,
 };
 
 #ifdef _GSS_STATIC_LINK
@@ -921,10 +916,11 @@ static int gss_iakerbmechglue_init(void)
     iakerb_mechanism.gss_init_sec_context   = iakerb_gss_init_sec_context;
     iakerb_mechanism.gss_delete_sec_context = iakerb_gss_delete_sec_context;
     iakerb_mechanism.gss_acquire_cred       = iakerb_gss_acquire_cred;
+    iakerb_mechanism.gssspi_acquire_cred_with_password
+                                    = iakerb_gss_acquire_cred_with_password;
 
     memset(&mech_iakerb, 0, sizeof(mech_iakerb));
     mech_iakerb.mech = &iakerb_mechanism;
-    mech_iakerb.mech_ext = &iakerb_mechanism_ext;
 
     mech_iakerb.mechNameStr = "iakerb";
     mech_iakerb.mech_type = (gss_OID)gss_mech_iakerb;
@@ -939,7 +935,6 @@ static int gss_krb5mechglue_init(void)
 
     memset(&mech_krb5, 0, sizeof(mech_krb5));
     mech_krb5.mech = &krb5_mechanism;
-    mech_krb5.mech_ext = &krb5_mechanism_ext;
 
     mech_krb5.mechNameStr = "kerberos_v5";
     mech_krb5.mech_type = (gss_OID)gss_mech_krb5;
@@ -1028,6 +1023,7 @@ void gss_krb5int_lib_fini(void)
 
     k5_key_delete(K5_KEY_GSS_KRB5_SET_CCACHE_OLD_NAME);
     k5_key_delete(K5_KEY_GSS_KRB5_CCACHE_NAME);
+    k5_key_delete(K5_KEY_GSS_KRB5_ERROR_MESSAGE);
     k5_mutex_destroy(&kg_vdb.mutex);
 #ifndef _WIN32
     k5_mutex_destroy(&kg_kdc_flag_mutex);

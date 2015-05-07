@@ -1,3 +1,4 @@
+
 /* -*- mode: c; c-basic-offset: 4; indent-tabs-mode: nil -*- */
 /* appl/user_user/server.c - One end of user-user client-server pair */
 /*
@@ -24,20 +25,17 @@
  * or implied warranty.
  */
 
+#include "k5-int.h"
+#include "port-sockets.h"
+#include "com_err.h"
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <stdio.h>
-#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <errno.h>
-
-#include "port-sockets.h"
-#include "k5-int.h"
-#include "com_err.h"
 
 /* fd 0 is a tcp socket used to talk to the client */
 
@@ -95,14 +93,14 @@ int main(argc, argv)
             com_err("uu-server", errno, "binding socket");
             exit(3);
         }
-
-        printf("Server started\n");
-        fflush(stdout);
-
         if (listen(sock, 1) == -1) {
             com_err("uu-server", errno, "listening");
             exit(3);
         }
+
+        printf("Server started\n");
+        fflush(stdout);
+
         if ((acc = accept(sock, (struct sockaddr *)&f_inaddr, &namelen)) == -1) {
             com_err("uu-server", errno, "accepting");
             exit(3);

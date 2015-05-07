@@ -89,6 +89,14 @@ void ktest_make_sample_ad_signedpath(krb5_ad_signedpath *p);
 void ktest_make_sample_iakerb_header(krb5_iakerb_header *p);
 void ktest_make_sample_iakerb_finished(krb5_iakerb_finished *p);
 void ktest_make_sample_fast_response(krb5_fast_response *p);
+void ktest_make_sha256_alg(krb5_algorithm_identifier *p);
+void ktest_make_sha1_alg(krb5_algorithm_identifier *p);
+void ktest_make_minimal_otp_tokeninfo(krb5_otp_tokeninfo *p);
+void ktest_make_maximal_otp_tokeninfo(krb5_otp_tokeninfo *p);
+void ktest_make_minimal_pa_otp_challenge(krb5_pa_otp_challenge *p);
+void ktest_make_maximal_pa_otp_challenge(krb5_pa_otp_challenge *p);
+void ktest_make_minimal_pa_otp_req(krb5_pa_otp_req *p);
+void ktest_make_maximal_pa_otp_req(krb5_pa_otp_req *p);
 
 #ifndef DISABLE_PKINIT
 void ktest_make_sample_pa_pk_as_req(krb5_pa_pk_as_req *p);
@@ -111,6 +119,9 @@ void ktest_make_sample_pkinit_supp_pub_info(krb5_pkinit_supp_pub_info *p);
 #ifdef ENABLE_LDAP
 void ktest_make_sample_ldap_seqof_key_data(ldap_seqof_key_data *p);
 #endif
+
+void ktest_make_sample_kkdcp_message(krb5_kkdcp_message *p);
+
 /*----------------------------------------------------------------------*/
 
 void ktest_empty_authorization_data(krb5_authdata **ad);
@@ -170,6 +181,9 @@ void ktest_empty_ad_signedpath(krb5_ad_signedpath *p);
 void ktest_empty_iakerb_header(krb5_iakerb_header *p);
 void ktest_empty_iakerb_finished(krb5_iakerb_finished *p);
 void ktest_empty_fast_response(krb5_fast_response *p);
+void ktest_empty_otp_tokeninfo(krb5_otp_tokeninfo *p);
+void ktest_empty_pa_otp_challenge(krb5_pa_otp_challenge *p);
+void ktest_empty_pa_otp_req(krb5_pa_otp_req *p);
 
 #ifndef DISABLE_PKINIT
 void ktest_empty_pa_pk_as_req(krb5_pa_pk_as_req *p);
@@ -188,6 +202,8 @@ void ktest_empty_pkinit_supp_pub_info(krb5_pkinit_supp_pub_info *p);
 #ifdef ENABLE_LDAP
 void ktest_empty_ldap_seqof_key_data(krb5_context, ldap_seqof_key_data *p);
 #endif
+
+void ktest_empty_kkdcp_message(krb5_kkdcp_message *p);
 
 extern krb5_context test_context;
 extern char *sample_principal_name;

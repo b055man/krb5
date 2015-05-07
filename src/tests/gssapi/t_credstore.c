@@ -27,41 +27,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <gssapi/gssapi_ext.h>
-#include <gssapi/gssapi_krb5.h>
+#include "common.h"
 
 static void
-print_gss_status(int type, OM_uint32 code)
-{
-    OM_uint32 major, minor;
-    gss_buffer_desc msg;
-    OM_uint32 msg_ctx = 0;
-
-    do {
-        major = gss_display_status(&minor, code, type,
-                                   GSS_C_NULL_OID, &msg_ctx, &msg);
-        if (major == 0) {
-            fprintf(stdout, "%s. ", (char *)msg.value);
-            major = gss_release_buffer(&minor, &msg);
-        }
-    } while (msg_ctx);
-}
-
-static void
-print_status(char *msg, OM_uint32 major, OM_uint32 minor)
-{
-    fprintf(stdout, "%s: ", msg);
-    print_gss_status(GSS_C_GSS_CODE, major);
-    print_gss_status(GSS_C_MECH_CODE, minor);
-    fprintf(stdout, "\n");
-}
-
-static void
-usage(const char *name)
+usage(void)
 {
     fprintf(stderr,
-            "Usage: %s <principal> [--cred_store {<key> <value>} ...]\n",
-            name);
+            "Usage: t_credstore [-sabi] principal [{key value} ...]\n");
+    exit(1);
 }
 
 int
@@ -69,86 +42,96 @@ main(int argc, char *argv[])
 {
     OM_uint32 minor, major;
     gss_key_value_set_desc store;
-    gss_buffer_desc buf;
-    gss_name_t service = GSS_C_NO_NAME;
+    gss_name_t name;
+    gss_cred_usage_t cred_usage = GSS_C_BOTH;
+    gss_OID_set mechs = GSS_C_NO_OID_SET;
     gss_cred_id_t cred = GSS_C_NO_CREDENTIAL;
-    int i, e;
+    gss_ctx_id_t ictx = GSS_C_NO_CONTEXT, actx = GSS_C_NO_CONTEXT;
+    gss_buffer_desc itok, atok;
+    krb5_boolean store_creds = FALSE, replay = FALSE;
+    char opt;
 
-    if (argc < 2 || ((argc - 3) % 2)) {
-        usage(argv[0]);
-        exit(1);
+    /* Parse options. */
+    for (argv++; *argv != NULL && **argv == '-'; argv++) {
+        opt = (*argv)[1];
+        if (opt == 's')
+            store_creds = TRUE;
+        else if (opt == 'r')
+            replay = TRUE;
+        else if (opt == 'a')
+            cred_usage = GSS_C_ACCEPT;
+        else if (opt == 'b')
+            cred_usage = GSS_C_BOTH;
+        else if (opt == 'i')
+            cred_usage = GSS_C_INITIATE;
+        else
+            usage();
     }
 
-    store.count = (argc - 3) / 2;
-    store.elements = calloc(store.count,
-                            sizeof(struct gss_key_value_element_struct));
-    if (!store.elements) {
-        fprintf(stderr, "OOM\n");
-        exit(1);
+    /* Get the principal name. */
+    if (*argv == NULL)
+        usage();
+    name = import_name(*argv++);
+
+    /* Put any remaining arguments into the store. */
+    store.elements = calloc(argc, sizeof(struct gss_key_value_element_struct));
+    if (!store.elements)
+        errout("OOM");
+    store.count = 0;
+    while (*argv != NULL) {
+        if (*(argv + 1) == NULL)
+            usage();
+        store.elements[store.count].key = *argv;
+        store.elements[store.count].value = *(argv + 1);
+        store.count++;
+        argv += 2;
     }
 
-    if (argc > 2) {
-        if (strcmp(argv[2], "--cred_store") != 0) {
-            usage(argv[0]);
-            exit(1);
-        }
+    if (store_creds) {
+        /* Acquire default creds and try to store them in the cred store. */
+        major = gss_acquire_cred(&minor, GSS_C_NO_NAME, 0, GSS_C_NO_OID_SET,
+                                 GSS_C_INITIATE, &cred, NULL, NULL);
+        check_gsserr("gss_acquire_cred", major, minor);
 
-        for (i = 3, e = 0; i < argc; i += 2, e++) {
-            store.elements[e].key = argv[i];
-            store.elements[e].value = argv[i + 1];
-            continue;
-        }
+        major = gss_store_cred_into(&minor, cred, GSS_C_INITIATE,
+                                    GSS_C_NO_OID, 1, 0, &store, NULL, NULL);
+        check_gsserr("gss_store_cred_into", major, minor);
+
+        gss_release_cred(&minor, &cred);
     }
 
-    /* First acquire default creds and try to store them in the cred store. */
-
-    major = gss_acquire_cred(&minor, GSS_C_NO_NAME, 0, GSS_C_NO_OID_SET,
-                             GSS_C_INITIATE, &cred, NULL, NULL);
-    if (major) {
-        print_status("gss_acquire_cred(default user creds) failed",
-                     major, minor);
-        goto out;
-    }
-
-    major = gss_store_cred_into(&minor, cred, GSS_C_INITIATE,
-                                GSS_C_NO_OID, 1, 0, &store, NULL, NULL);
-    if (major) {
-        print_status("gss_store_cred_in_store(default user creds) failed",
-                     major, minor);
-        goto out;
-    }
-
-    gss_release_cred(&minor, &cred);
-
-    /* Then try to acquire creds from store. */
-
-    buf.value = argv[1];
-    buf.length = strlen(argv[1]);
-
-    major = gss_import_name(&minor, &buf,
-                            (gss_OID)GSS_KRB5_NT_PRINCIPAL_NAME,
-                            &service);
-    if (major) {
-        print_status("gss_import_name(principal) failed", major, minor);
-        goto out;
-    }
-
-    major = gss_acquire_cred_from(&minor, service,
-                                  0, GSS_C_NO_OID_SET, GSS_C_BOTH,
+    /* Try to acquire creds from store. */
+    major = gss_acquire_cred_from(&minor, name, 0, mechs, cred_usage,
                                   &store, &cred, NULL, NULL);
-    if (major) {
-        print_status("gss_acquire_cred_from_store(principal) failed",
-                     major, minor);
-        goto out;
+    check_gsserr("gss_acquire_cred_from", major, minor);
+
+    if (replay) {
+        /* Induce a replay using cred as the acceptor cred, to test the replay
+         * cache indicated by the store. */
+        major = gss_init_sec_context(&minor, GSS_C_NO_CREDENTIAL, &ictx, name,
+                                     &mech_krb5, 0, GSS_C_INDEFINITE,
+                                     GSS_C_NO_CHANNEL_BINDINGS,
+                                     GSS_C_NO_BUFFER, NULL, &itok, NULL, NULL);
+        check_gsserr("gss_init_sec_context", major, minor);
+        (void)gss_delete_sec_context(&minor, &ictx, NULL);
+
+        major = gss_accept_sec_context(&minor, &actx, cred, &itok,
+                                       GSS_C_NO_CHANNEL_BINDINGS, NULL, NULL,
+                                       &atok, NULL, NULL, NULL);
+        check_gsserr("gss_accept_sec_context(1)", major, minor);
+        (void)gss_release_buffer(&minor, &atok);
+        (void)gss_delete_sec_context(&minor, &actx, NULL);
+
+        major = gss_accept_sec_context(&minor, &actx, cred, &itok,
+                                       GSS_C_NO_CHANNEL_BINDINGS, NULL, NULL,
+                                       &atok, NULL, NULL, NULL);
+        check_gsserr("gss_accept_sec_context(2)", major, minor);
+        (void)gss_release_buffer(&minor, &atok);
+        (void)gss_delete_sec_context(&minor, &actx, NULL);
     }
 
-    fprintf(stdout, "Cred Store Success\n");
-
-    major = 0;
-
-out:
-    gss_release_name(&minor, &service);
+    gss_release_name(&minor, &name);
     gss_release_cred(&minor, &cred);
     free(store.elements);
-    return major;
+    return 0;
 }

@@ -2,7 +2,7 @@
 /* kdc/kdc_util.h */
 /*
  * Portions Copyright (C) 2007 Apple Inc.
- * Copyright 1990, 2007 by the Massachusetts Institute of Technology.
+ * Copyright 1990, 2007, 2014 by the Massachusetts Institute of Technology.
  *
  * Export of this software from the United States of America may
  *   require a specific license from the United States Government.
@@ -30,12 +30,15 @@
 #ifndef __KRB5_KDC_UTIL__
 #define __KRB5_KDC_UTIL__
 
+#include <krb5/kdcpreauth_plugin.h>
 #include "kdb.h"
 #include "net-server.h"
+#include "realm_data.h"
+#include "reqstate.h"
 
 krb5_error_code check_hot_list (krb5_ticket *);
-krb5_boolean realm_compare (krb5_const_principal, krb5_const_principal);
-krb5_boolean is_local_principal(krb5_const_principal princ1);
+krb5_boolean is_local_principal(kdc_realm_t *kdc_active_realm,
+                                krb5_const_principal princ1);
 krb5_boolean krb5_is_tgs_principal (krb5_const_principal);
 krb5_boolean is_cross_tgs_principal(krb5_const_principal);
 krb5_error_code
@@ -49,7 +52,8 @@ compress_transited (krb5_data *,
                     krb5_principal,
                     krb5_data *);
 krb5_error_code
-concat_authorization_data (krb5_authdata **,
+concat_authorization_data (krb5_context,
+                           krb5_authdata **,
                            krb5_authdata **,
                            krb5_authdata ***);
 krb5_error_code
@@ -58,7 +62,7 @@ fetch_last_req_info (krb5_db_entry *, krb5_last_req_entry ***);
 krb5_error_code
 kdc_convert_key (krb5_keyblock *, krb5_keyblock *, int);
 krb5_error_code
-kdc_process_tgs_req (krb5_kdc_req *,
+kdc_process_tgs_req (kdc_realm_t *, krb5_kdc_req *,
                      const krb5_fulladdr *,
                      krb5_data *,
                      krb5_ticket **,
@@ -67,12 +71,12 @@ kdc_process_tgs_req (krb5_kdc_req *,
                      krb5_pa_data **pa_tgs_req);
 
 krb5_error_code
-kdc_get_server_key (krb5_ticket *, unsigned int,
+kdc_get_server_key (krb5_context, krb5_ticket *, unsigned int,
                     krb5_boolean match_enctype,
                     krb5_db_entry **, krb5_keyblock **, krb5_kvno *);
 
 int
-validate_as_request (krb5_kdc_req *, krb5_db_entry,
+validate_as_request (kdc_realm_t *, krb5_kdc_req *, krb5_db_entry,
                      krb5_db_entry, krb5_timestamp,
                      const char **, krb5_pa_data ***);
 
@@ -82,7 +86,7 @@ validate_forwardable(krb5_kdc_req *, krb5_db_entry,
                      const char **);
 
 int
-validate_tgs_request (krb5_kdc_req *, krb5_db_entry,
+validate_tgs_request (kdc_realm_t *, krb5_kdc_req *, krb5_db_entry,
                       krb5_ticket *, krb5_timestamp,
                       const char **, krb5_pa_data ***);
 
@@ -90,7 +94,7 @@ int
 fetch_asn1_field (unsigned char *, unsigned int, unsigned int, krb5_data *);
 
 krb5_enctype
-select_session_keytype (krb5_context context,
+select_session_keytype (kdc_realm_t *kdc_active_realm,
                         krb5_db_entry *server,
                         int nktypes,
                         krb5_enctype *ktypes);
@@ -106,12 +110,12 @@ rep_etypes2str(char *s, size_t len, krb5_kdc_rep *rep);
 /* do_as_req.c */
 void
 process_as_req (krb5_kdc_req *, krb5_data *,
-                const krb5_fulladdr *,
+                const krb5_fulladdr *, kdc_realm_t *,
                 verto_ctx *, loop_respond_fn, void *);
 
 /* do_tgs_req.c */
 krb5_error_code
-process_tgs_req (krb5_data *,
+process_tgs_req (struct server_handle *, krb5_data *,
                  const krb5_fulladdr *,
                  krb5_data ** );
 /* dispatch.c */
@@ -125,8 +129,6 @@ dispatch (void *,
           loop_respond_fn,
           void *);
 
-krb5_error_code
-setup_server_realm (krb5_principal);
 void
 kdc_err(krb5_context call_context, errcode_t code, const char *fmt, ...)
 #if !defined(__cplusplus) && (__GNUC__ > 2)
@@ -159,7 +161,8 @@ get_preauth_hint_list(krb5_kdc_req *request,
                       krb5_kdcpreauth_rock rock, krb5_pa_data ***e_data_out,
                       kdc_hint_respond_fn respond, void *arg);
 void
-load_preauth_plugins(krb5_context context);
+load_preauth_plugins(struct server_handle * handle, krb5_context context,
+                     verto_ctx *ctx);
 void
 unload_preauth_plugins(krb5_context context);
 
@@ -179,9 +182,6 @@ return_padata(krb5_context context, krb5_kdcpreauth_rock rock,
 
 void
 free_padata_context(krb5_context context, void *padata_context);
-
-krb5_pa_data *
-find_pa_data (krb5_pa_data **padata, krb5_preauthtype pa_type);
 
 krb5_error_code
 add_pa_data_element (krb5_context context,
@@ -222,13 +222,13 @@ handle_authdata (krb5_context context,
 
 /* replay.c */
 krb5_error_code kdc_init_lookaside(krb5_context context);
-krb5_boolean kdc_check_lookaside (krb5_data *, krb5_data **);
-void kdc_insert_lookaside (krb5_data *, krb5_data *);
+krb5_boolean kdc_check_lookaside (krb5_context, krb5_data *, krb5_data **);
+void kdc_insert_lookaside (krb5_context, krb5_data *, krb5_data *);
 void kdc_remove_lookaside (krb5_context kcontext, krb5_data *);
 void kdc_free_lookaside(krb5_context);
 
 /* kdc_util.c */
-void reset_for_hangup(void);
+void reset_for_hangup(void *);
 
 krb5_boolean
 include_pac_p(krb5_context context, krb5_kdc_req *request);
@@ -242,7 +242,7 @@ return_enc_padata(krb5_context context,
                   krb5_boolean is_referral);
 
 krb5_error_code
-kdc_process_s4u2self_req (krb5_context context,
+kdc_process_s4u2self_req (kdc_realm_t *kdc_active_realm,
                           krb5_kdc_req *request,
                           krb5_const_principal client_princ,
                           const krb5_db_entry *server,
@@ -262,7 +262,7 @@ kdc_make_s4u2self_rep (krb5_context context,
                        krb5_enc_kdc_rep_part *reply_encpart);
 
 krb5_error_code
-kdc_process_s4u2proxy_req (krb5_context context,
+kdc_process_s4u2proxy_req (kdc_realm_t *kdc_active_realm,
                            krb5_kdc_req *request,
                            const krb5_enc_tkt_part *t2enc,
                            const krb5_db_entry *server,
@@ -271,7 +271,7 @@ kdc_process_s4u2proxy_req (krb5_context context,
                            const char **status);
 
 krb5_error_code
-kdc_check_transited_list (krb5_context context,
+kdc_check_transited_list (kdc_realm_t *kdc_active_realm,
                           const krb5_data *trans,
                           const krb5_data *realm1,
                           const krb5_data *realm2);
@@ -296,7 +296,7 @@ validate_transit_path(krb5_context context,
                       krb5_db_entry *server,
                       krb5_db_entry *krbtgt);
 void
-kdc_get_ticket_endtime(krb5_context context,
+kdc_get_ticket_endtime(kdc_realm_t *kdc_active_realm,
                        krb5_timestamp now,
                        krb5_timestamp endtime,
                        krb5_timestamp till,
@@ -305,34 +305,32 @@ kdc_get_ticket_endtime(krb5_context context,
                        krb5_timestamp *out_endtime);
 
 void
-log_as_req(const krb5_fulladdr *from,
+kdc_get_ticket_renewtime(kdc_realm_t *realm, krb5_kdc_req *request,
+                         krb5_enc_tkt_part *tgt, krb5_db_entry *client,
+                         krb5_db_entry *server, krb5_enc_tkt_part *tkt);
+
+void
+log_as_req(krb5_context context, const krb5_fulladdr *from,
            krb5_kdc_req *request, krb5_kdc_rep *reply,
            krb5_db_entry *client, const char *cname,
            krb5_db_entry *server, const char *sname,
            krb5_timestamp authtime,
            const char *status, krb5_error_code errcode, const char *emsg);
 void
-log_tgs_req(const krb5_fulladdr *from,
+log_tgs_req(krb5_context ctx, const krb5_fulladdr *from,
             krb5_kdc_req *request, krb5_kdc_rep *reply,
-            const char *cname, const char *sname, const char *altcname,
+            krb5_principal cprinc, krb5_principal sprinc,
+            krb5_principal altcprinc,
             krb5_timestamp authtime,
-            unsigned int c_flags, const char *s4u_name,
+            unsigned int c_flags,
             const char *status, krb5_error_code errcode, const char *emsg);
 void
-log_tgs_alt_tgt(krb5_principal p);
+log_tgs_badtrans(krb5_context ctx, krb5_principal cprinc,
+                 krb5_principal sprinc, krb5_data *trcont,
+                 krb5_error_code errcode);
 
-/*Request state*/
-
-struct kdc_request_state {
-    krb5_keyblock *armor_key;
-    krb5_keyblock *strengthen_key;
-    krb5_pa_data *cookie;
-    krb5_int32 fast_options;
-    krb5_int32 fast_internal_flags;
-};
-
-krb5_error_code kdc_make_rstate(struct kdc_request_state **out);
-void kdc_free_rstate (struct kdc_request_state *s);
+void
+log_tgs_alt_tgt(krb5_context context, krb5_principal p);
 
 /* FAST*/
 enum krb5_fast_kdc_flags {
@@ -373,13 +371,15 @@ krb5_error_code kdc_fast_handle_reply_key(struct kdc_request_state *state,
 
 krb5_error_code kdc_preauth_get_cookie(struct kdc_request_state *state,
                                        krb5_pa_data **cookie);
+
+krb5_boolean
+kdc_fast_hide_client(struct kdc_request_state *state);
+
 krb5_error_code
-kdc_handle_protected_negotiation( krb5_data *req_pkt, krb5_kdc_req *request,
+kdc_handle_protected_negotiation( krb5_context context,
+                                  krb5_data *req_pkt, krb5_kdc_req *request,
                                   const krb5_keyblock *reply_key,
                                   krb5_pa_data ***out_enc_padata);
-krb5_error_code
-krb5int_get_domain_realm_mapping(krb5_context context,
-                                 const char *host, char ***realmsp);
 
 /* Information handle for kdcpreauth callbacks.  All pointers are aliases. */
 struct krb5_kdcpreauth_rock_st {
@@ -406,5 +406,84 @@ struct krb5_kdcpreauth_rock_st {
 /* RFC 4120: KRB5KDC_ERR_KEY_TOO_WEAK
  * RFC 4556: KRB5KDC_ERR_DH_KEY_PARAMETERS_NOT_ACCEPTED */
 #define KRB5KDC_ERR_KEY_TOO_WEAK KRB5KDC_ERR_DH_KEY_PARAMETERS_NOT_ACCEPTED
+/* TGS-REQ options where the service can be a non-TGS principal  */
+
+#define NON_TGT_OPTION (KDC_OPT_FORWARDED | KDC_OPT_PROXY | KDC_OPT_RENEW | \
+                        KDC_OPT_VALIDATE)
+
+/* TGS-REQ options which are not compatible with referrals */
+#define NO_REFERRAL_OPTION (NON_TGT_OPTION | KDC_OPT_ENC_TKT_IN_SKEY)
+
+/*
+ * Mask of KDC options that request the corresponding ticket flag with
+ * the same number.  Some of these are invalid for AS-REQs, but
+ * validate_as_request() takes care of that.  KDC_OPT_RENEWABLE isn't
+ * here because it needs special handling in
+ * kdc_get_ticket_renewtime().
+ *
+ * According to RFC 4120 section 3.1.3 the following AS-REQ options
+ * request their corresponding ticket flags if local policy allows:
+ *
+ * KDC_OPT_FORWARDABLE  KDC_OPT_ALLOW_POSTDATE
+ * KDC_OPT_POSTDATED    KDC_OPT_PROXIABLE
+ * KDC_OPT_RENEWABLE
+ *
+ * RFC 1510 section A.6 shows pseudocode indicating that the following
+ * TGS-REQ options request their corresponding ticket flags if local
+ * policy allows:
+ *
+ * KDC_OPT_FORWARDABLE  KDC_OPT_FORWARDED
+ * KDC_OPT_PROXIABLE    KDC_OPT_PROXY
+ * KDC_OPT_POSTDATED    KDC_OPT_RENEWABLE
+ *
+ * The above list omits KDC_OPT_ALLOW_POSTDATE, but RFC 4120 section
+ * 5.4.1 says the TGS also handles it.
+ *
+ * RFC 6112 makes KDC_OPT_REQUEST_ANONYMOUS the same bit number as
+ * TKT_FLG_ANONYMOUS.
+ */
+#define OPTS_COMMON_FLAGS_MASK                                  \
+    (KDC_OPT_FORWARDABLE        | KDC_OPT_FORWARDED     |       \
+     KDC_OPT_PROXIABLE          | KDC_OPT_PROXY         |       \
+     KDC_OPT_ALLOW_POSTDATE     | KDC_OPT_POSTDATED     |       \
+     KDC_OPT_REQUEST_ANONYMOUS)
+
+/* Copy KDC options that request the corresponding ticket flags. */
+#define OPTS2FLAGS(x) (x & OPTS_COMMON_FLAGS_MASK)
+
+/*
+ * Mask of ticket flags for the TGS to propagate from a ticket to a
+ * derivative ticket.
+ *
+ * RFC 4120 section 2.1 says the following flags are carried forward
+ * from an initial ticket to derivative tickets:
+ *
+ * TKT_FLG_PRE_AUTH
+ * TKT_FLG_HW_AUTH
+ *
+ * RFC 4120 section 2.6 says TKT_FLG_FORWARDED is carried forward to
+ * derivative tickets.  Proxy tickets are basically identical to
+ * forwarded tickets except that a TGT may never be proxied, therefore
+ * tickets derived from proxy tickets should have TKT_FLAG_PROXY set.
+ * RFC 4120 and RFC 1510 apparently have an accidental omission in not
+ * requiring that tickets derived from a proxy ticket have
+ * TKT_FLG_PROXY set.  Previous code also omitted this behavior.
+ *
+ * RFC 6112 section 4.2 implies that TKT_FLG_ANONYMOUS must be
+ * propagated from an anonymous ticket to derivative tickets.
+ */
+#define TGS_COPIED_FLAGS_MASK                           \
+    (TKT_FLG_FORWARDED  | TKT_FLG_PROXY         |       \
+     TKT_FLG_PRE_AUTH   | TKT_FLG_HW_AUTH       |       \
+     TKT_FLG_ANONYMOUS)
+
+/* Copy appropriate header ticket flags to new ticket. */
+#define COPY_TKT_FLAGS(x) (x & TGS_COPIED_FLAGS_MASK)
+
+int check_anon(kdc_realm_t *kdc_active_realm,
+               krb5_principal client, krb5_principal server);
+int errcode_to_protocol(krb5_error_code code);
+
+char *data2string(krb5_data *d);
 
 #endif /* __KRB5_KDC_UTIL__ */
